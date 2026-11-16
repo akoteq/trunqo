@@ -20,7 +20,7 @@ import { timeAgo } from "@/components/comments/time";
 
 export type AppNotification = {
   id: string;
-  type: "MENTION";
+  type: "MENTION" | "TASK_ASSIGNED";
   actorName: string | null;
   entityType: EntityType;
   entityId: string;
@@ -60,7 +60,9 @@ export function useOpenLink() {
 }
 
 const headline = (n: AppNotification) =>
-  `${n.actorName ?? "Someone"} mentioned you ${n.commentId ? "on" : "in"} ${n.entityTitle ?? `a ${NOUN[n.entityType]}`}`;
+  n.type === "TASK_ASSIGNED"
+    ? `${n.actorName ?? "Someone"} gave you a task: ${n.entityTitle ?? "a task"}`
+    : `${n.actorName ?? "Someone"} mentioned you ${n.commentId ? "on" : "in"} ${n.entityTitle ?? `a ${NOUN[n.entityType]}`}`;
 
 /** Mount once (AppShell): keeps the count and list fresh from the socket and toasts new mentions. */
 export function NotificationsListener() {
