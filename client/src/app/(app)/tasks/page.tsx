@@ -131,14 +131,14 @@ export default function TasksPage() {
   // The board is for tasks; proposals and approvals keep their own screens.
   const showBoard = view === "board" && !isProposalView && !isApprovalView;
 
-  // Staff are always scoped to their own tasks; everyone else uses the filter bar.
+  // Staff get their own tasks plus the ones they gave to colleagues (the server scopes this);
+  // everyone else uses the filter bar.
   // Blocked isn't a stored status: the server works it out from "Can't start until".
   const { status: statusFilter, ...rest } = filters;
   const effective = {
     ...rest,
     ...(statusFilter === "BLOCKED" ? { blocked: "1" } : { status: statusFilter }),
     type: isProposalView ? "PROPOSAL" : "TASK",
-    ...(isBdo ? { bdoId: myBdoId ?? "" } : {}),
   };
   const params = new URLSearchParams(Object.fromEntries(Object.entries(effective).filter(([, v]) => v)));
   const tasksKey = ["tasks", effective];
@@ -152,7 +152,8 @@ export default function TasksPage() {
   const { data: bdos = [] } = useQuery<Bdo[]>({
     queryKey: ["bdos"],
     queryFn: () => fetcher("/bdo"),
-    enabled: !isBdo,
+    // Staff need their colleagues too: they can give them tasks.
+    enabled: !!user && !external,
   });
 
   const { data: smeRes } = useQuery<{ data: ClientOption[]; total: number }>({
@@ -204,7 +205,13 @@ export default function TasksPage() {
   // A manager's finished task counts at once, so they say what was received and spent first.
   const [finishing, setFinishing] = useState<Task | null>(null);
   const needsMoney = (task: Task, status: string) => !isBdo && status === "COMPLETED" && task.status !== "COMPLETED" && hasTaskMoney(task);
+  // Staff update only their own tasks' progress; a task they gave out is its owner's to update.
+  const canProgress = (t: Task) => !isBdo || t.bdoId === myBdoId;
   const changeStatus = (task: Task, status: string) => {
+    if (!canProgress(task)) {
+      toast.info(`Only ${task.bdo?.name ?? "the person it's for"} can update this task's progress`, { description: "You can still change its details or hand it to someone else." });
+      return;
+    }
     if (needsMoney(task, status)) setFinishing(task);
     else toggleMutation.mutate({ task, status });
   };
@@ -228,6 +235,9 @@ export default function TasksPage() {
   const notStartedN = data.filter((t) => t.status === "PENDING").length;
   const blockedN = data.filter((t) => t.blocked).length;
   const mineN = myBdoId ? data.filter((t) => t.bdoId === myBdoId).length : 0;
+  // Tasks this person gave to someone else.
+  const gaveToOther = (t: Task) => !!myBdoId && t.assignedByBdoId === myBdoId && t.bdoId !== myBdoId;
+  const givenN = data.filter(gaveToOther).length;
   const weekN = data.filter(isDueThisWeek).length;
   const pct = (n: number) => (total ? Math.round((n / total) * 100) : 0);
 
@@ -246,6 +256,7 @@ export default function TasksPage() {
     );
   const matchesTab = (t: Task) =>
     tab === "mine" ? !!myBdoId && t.bdoId === myBdoId
+    : tab === "given" ? gaveToOther(t)
     : tab === "overdue" ? isOverdue(t)
     : tab === "week" ? isDueThisWeek(t)
     : true;
@@ -288,7 +299,7 @@ export default function TasksPage() {
     "minmax(0,2.4fr)",
     "84px",
     ...(oneCompany ? [] : ["minmax(0,1.3fr)"]),
-    ...(isBdo ? [] : ["minmax(0,1.2fr)"]),
+    ...(external ? [] : ["minmax(0,1.2fr)"]),
     "132px",
     // Status, plus "Review" or "Awaiting approval" beside it
     "190px",
@@ -331,8 +342,10 @@ export default function TasksPage() {
 
   const tabs: { key: TabKey; label: string; count: number | null; badge: string }[] = [
     { key: "all", label: "All tasks", count: isProposalView ? null : total, badge: "" },
-    // "Mine" only means something to someone who assigns work to others.
-    ...(!isBdo && myBdoId ? [{ key: "mine" as TabKey, label: "My tasks", count: isProposalView ? null : mineN, badge: "" }] : []),
+    // "Mine" and "Given to others" only mean something to someone who gives work to others,
+    // which now includes staff.
+    ...(!external && myBdoId ? [{ key: "mine" as TabKey, label: "My tasks", count: isProposalView ? null : mineN, badge: "" }] : []),
+    ...(!external && myBdoId && !isProposalView ? [{ key: "given" as TabKey, label: "Given to others", count: givenN, badge: "" }] : []),
     { key: "overdue", label: "Overdue", count: isProposalView ? null : overdueN, badge: "bg-red-50 text-red-600" },
     { key: "week", label: "Due this week", count: isProposalView ? null : weekN, badge: "" },
     ...(external ? [] : [{ key: "proposals" as TabKey, label: "Proposals", count: isProposalView ? total : null, badge: "" }]),
@@ -349,7 +362,7 @@ export default function TasksPage() {
           {isProposalView
             ? isBdo ? "Your client proposals and how they turned out." : `Client proposals and how they turned out across ${scopeName}.`
             : external ? "The work you've been given on your projects. Update it as you go and add files that show it's done."
-            : isBdo ? "Everything assigned to you, in one place." : `Give work to your team and follow it through to done across ${scopeName}.`}
+            : isBdo ? "Your tasks, and the ones you gave to colleagues, in one place." : `Give work to your team and follow it through to done across ${scopeName}.`}
         </p>
       </div>
 
@@ -536,8 +549,8 @@ export default function TasksPage() {
         data.length === 0 && !filtering ? (
           <EmptyCard
             title="No tasks yet"
-            body={isBdo ? "Nothing has been assigned to you yet." : "Add the first one. Give it an owner and a due date and it shows up here."}
-            action={!isBdo ? <button onClick={openAdd} className="text-sm font-medium text-accent hover:underline">New task</button> : undefined}
+            body={isBdo ? "Nothing has been assigned to you yet. You can add a task for yourself or give one to a colleague." : "Add the first one. Give it an owner and a due date and it shows up here."}
+            action={!external ? <button onClick={openAdd} className="text-sm font-medium text-accent hover:underline">New task</button> : undefined}
           />
         ) : (
           <EmptyCard
@@ -549,9 +562,9 @@ export default function TasksPage() {
       ) : showBoard ? (
         <TaskBoard
           tasks={boardTasks}
-          showBdo={!isBdo}
-          // Staff only ever see their own tasks; this keeps it that way if that scoping ever loosens.
-          canMove={(t) => !isBdo || t.bdoId === myBdoId}
+          showBdo={!external}
+          // Staff move only their own tasks: a task they gave out is updated by its owner.
+          canMove={canProgress}
           isUpdating={(t) => toggleMutation.isPending && toggleMutation.variables?.task.id === t.id}
           onOpen={openEdit}
           onMove={moveTask}
@@ -602,7 +615,7 @@ export default function TasksPage() {
                       group={g}
                       gridCols={gridCols}
                       showCompany={!oneCompany}
-                      showBdo={!isBdo}
+                      showBdo={!external}
                       companyName={t.company ? (byKey[t.company]?.name ?? t.company) : ""}
                       updating={toggleMutation.isPending && toggleMutation.variables?.task.id === t.id}
                       onToggle={() => changeStatus(t, t.status === "COMPLETED" ? "PENDING" : "COMPLETED")}

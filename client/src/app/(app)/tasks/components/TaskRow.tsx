@@ -6,6 +6,7 @@ import { Calendar, FileText, Loader2, MessageSquare, Paperclip, Target, UploadCl
 import { CATEGORY_ICONS, categoryOf, counts, fmtDate, isOverdue, shownStatus, type Task, type TaskGroup } from "./task-utils";
 import { PriorityPill, RowMenu, StatusMenu } from "./TaskBits";
 import { AttachmentChips } from "./Attachments";
+import { useAuth } from "@/components/AuthProvider";
 
 /**
  * One task. From `lg` up it is a single table row (the grid columns come from the page).
@@ -40,6 +41,8 @@ export function TaskRow({ task, group, gridCols, showCompany, showBdo, companyNa
   /** Managers only: opens the approve / reject popup for work waiting on them. */
   onReview?: () => void;
 }) {
+  const { user } = useAuth();
+  const myBdoId = user?.bdoId ?? null;
   const category = categoryOf(task);
   const Icon = CATEGORY_ICONS[category] ?? FileText;
   const overdue = isOverdue(task);
@@ -177,6 +180,7 @@ export function TaskRow({ task, group, gridCols, showCompany, showBdo, companyNa
         {showBdo && (
           <div className="text-sm text-foreground/80 truncate max-lg:max-w-[45%]">
             {task.bdo?.name ?? <span className="text-muted">Nobody yet</span>}
+            {task.assignedBy && <GivenBy name={task.assignedBy.name} mine={task.assignedBy.id === myBdoId} />}
           </div>
         )}
 
@@ -224,4 +228,9 @@ export function TaskRow({ task, group, gridCols, showCompany, showBdo, companyNa
       </div>
     </div>
   );
+}
+
+// Who gave the task out, shown under its owner.
+function GivenBy({ name, mine }: { name: string; mine: boolean }) {
+  return <span className="block text-xs text-muted truncate">{mine ? "Given by you" : `From ${name}`}</span>;
 }

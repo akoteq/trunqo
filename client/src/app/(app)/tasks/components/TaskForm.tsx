@@ -165,8 +165,13 @@ export function TaskForm({ task, bdos, clients, allTasks, isBdo, oneCompany, myB
   });
   const project: TaskProject | null = projectProp ?? (fetched ? { id: fetched.id, name: fetched.name, company: fetched.company, canManage: fetched.canManage, members: fetched.members } : null);
   const projectCompany = projectProp && projectProp.company !== "SHARED" ? projectProp.company : null;
-  // Whoever runs the project picks any member; everyone else adds work for themselves.
-  const pickOwner = project ? project.canManage : !isBdo;
+  // In a project, whoever runs it picks any member; everyone else adds work for themselves.
+  // Outside projects anyone can give a task to a colleague in their company. Staff can hand an
+  // existing task to someone else only if they gave it out (or created it for themselves).
+  const gaveThis = !!task && !!myBdoId && task.assignedByBdoId === myBdoId;
+  const pickOwner = project ? project.canManage : (!isBdo || !task || gaveThis);
+  // Staff who gave a task to someone else change its details; its owner updates where it's at.
+  const progressLocked = isBdo && !!task && !project && task.bdoId !== myBdoId;
 
   const startCompany = task?.company ?? projectCompany ?? ownCompany ?? "TRADELINE";
   // A new task starts with the logged-in person as owner, when they can own it: someone on the
@@ -288,7 +293,7 @@ export function TaskForm({ task, bdos, clients, allTasks, isBdo, oneCompany, myB
       year,
       priority: form.priority,
       deliverable: form.deliverable.trim(),
-      status: form.status,
+      ...(progressLocked ? {} : { status: form.status }),
       company: form.company,
       notes: form.notes || null,
       targetDate: form.targetDate || null,
@@ -510,11 +515,17 @@ export function TaskForm({ task, bdos, clients, allTasks, isBdo, oneCompany, myB
 
             <MoreOptions open={more2} onToggle={() => setMore2((o) => !o)}>
               <Field label="Where is it at?">
-                <Chips
-                  value={form.status}
-                  options={STATUSES.map((s) => [s, STATUS_LABEL[s]] as const)}
-                  onChange={(v) => set("status", v)}
-                />
+                {progressLocked ? (
+                  <p className="text-sm text-muted">
+                    {STATUS_LABEL[task?.status ?? "PENDING"] ?? task?.status}. Only {task?.bdo?.name ?? "the person it's for"} can update this.
+                  </p>
+                ) : (
+                  <Chips
+                    value={form.status}
+                    options={STATUSES.map((s) => [s, STATUS_LABEL[s]] as const)}
+                    onChange={(v) => set("status", v)}
+                  />
+                )}
               </Field>
             </MoreOptions>
           </>
@@ -563,13 +574,13 @@ export function TaskForm({ task, bdos, clients, allTasks, isBdo, oneCompany, myB
             )}
 
             {pickOwner && !project && (
-              <Field label="Who's responsible for it?" hint="(you can pick later)">
+              <Field label="Who's responsible for it?" hint={isBdo ? "(you, or a colleague in your company)" : "(you can pick later)"}>
                 <select
                   value={form.bdoId}
                   onChange={(e) => setForm((f) => ({ ...f, bdoId: e.target.value, kpiId: "" }))}
                   className={inputClass}
                 >
-                  <option value="">Nobody yet</option>
+                  {!isBdo && <option value="">Nobody yet</option>}
                   {/* Only people at the chosen company. An older task filed under another company keeps its owner listed. */}
                   {bdos
                     .filter((b) => oneCompany || b.company === form.company || b.id === task?.bdoId)
@@ -581,9 +592,15 @@ export function TaskForm({ task, bdos, clients, allTasks, isBdo, oneCompany, myB
             {!pickOwner && (
               <Field label="Who's responsible for it?">
                 <div className={clsx(inputClass, "flex items-center justify-between bg-subtle text-muted")}>
-                  {user?.bdoName ?? "You"} (you) <Lock size={14} />
+                  {task && task.bdoId !== myBdoId ? (task.bdo?.name ?? "Someone else") : `${user?.bdoName ?? "You"} (you)`} <Lock size={14} />
                 </div>
-                <p className="text-xs text-muted mt-1.5">{project ? "Only whoever runs the project can assign tasks to other people." : "Only your Business CEO can assign tasks to other people."}</p>
+                <p className="text-xs text-muted mt-1.5">
+                  {project
+                    ? "Only whoever runs the project can assign tasks to other people."
+                    : task?.assignedBy
+                      ? `${task.assignedBy.name} gave you this task. Only they or your Business CEO can hand it to someone else.`
+                      : "Only your Business CEO can hand this task to someone else."}
+                </p>
               </Field>
             )}
 
