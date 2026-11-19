@@ -14,6 +14,7 @@ import { accessLevel } from "@/lib/auth";
 import { EngagementSection, ClientComplianceSection, ClientContactsSection } from "@/components/ClientModules";
 import Link from "next/link";
 import { AddClientSheet } from "./components/AddClientSheet";
+import { BulkDeleteSheet } from "./components/BulkDeleteSheet";
 import { REVENUE_YEARS, STATUS_OPTS, TIER_OPTS, type BdoOption, type LinkedDeal, type SME } from "./components/lib";
 import { X, FileText, Trash2, Share2 } from "lucide-react";
 
@@ -91,6 +92,9 @@ export default function SmePage() {
   // Tradeline's financing fields and deal links are Tradeline's own (decided 2026-10-14).
   const tradelineView = !!user && (accessLevel(user.role) === "GROUP_OWNER" || user.bdoCompany === tradelineKey);
   const [mine, setMine] = useState(false);
+  // Batch delete is for the Business CEO and Group Owner; the server enforces the same.
+  const manager = !!user && accessLevel(user.role) !== "STAFF";
+  const [bulkDelete, setBulkDelete] = useState<{ ids: string[]; clear: () => void } | null>(null);
 
   const setFilter = (key: string, value: string) => {
     setFilters((f) => ({ ...f, [key]: value }));
@@ -208,8 +212,14 @@ export default function SmePage() {
         title={`${total.toLocaleString()} clients`}
         onAdd={() => { setEditing(null); setShowForm(true); }}
         onEdit={(row) => { setEditing(row); setShowForm(true); }}
-        onDelete={(row) => confirmAction({ title: `Delete ${row.companyName}?`, body: "The client is removed for everyone. This can't be undone.", confirmLabel: "Delete client" }).then((ok) => { if (ok) deleteMutation.mutate(row.id); })}
+        onDelete={(row) => confirmAction({ title: `Delete ${row.companyName}?`, body: "The client is removed for everyone, with its compliance records, notes and documents. Its deals and leads are kept but no longer linked. This can't be undone.", confirmLabel: "Delete client" }).then((ok) => { if (ok) deleteMutation.mutate(row.id); })}
         canEditRow={(row) => row.canEdit !== false}
+        bulkActions={manager ? (rows, clear) => (
+          <button onClick={() => setBulkDelete({ ids: rows.map((r) => r.id), clear })}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-700 border border-red-300 rounded-lg hover:bg-red-50">
+            <Trash2 size={13} /> Delete {rows.length}
+          </button>
+        ) : undefined}
         filterBar={
           <div className="flex flex-wrap items-center gap-2">
             <FilterSelect value={filters.status} options={[{ value: "", label: "All Statuses" }, ...STATUS_OPTS.map((s) => ({ value: s, label: s.replace(/_/g, " ") }))]} onChange={(v) => setFilter("status", v)} />
@@ -233,6 +243,13 @@ export default function SmePage() {
             <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1} className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Next →</button>
           </div>
         </div>
+      )}
+
+      {bulkDelete && (
+        <BulkDeleteSheet
+          ids={bulkDelete.ids} onClose={() => setBulkDelete(null)}
+          onDone={() => { bulkDelete.clear(); setBulkDelete(null); if (detailId && bulkDelete.ids.includes(detailId)) setDetailId(null); }}
+        />
       )}
 
       {showForm && (

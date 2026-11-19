@@ -139,7 +139,7 @@ type ComplianceRow = { id: string; regulator: string; requirementName: string; s
 
 export const STATE_STYLE: Record<string, string> = {
   VERIFIED: "bg-green-100 text-green-700", AWAITING_VERIFICATION: "bg-amber-100 text-amber-800", NOT_REGISTERED: "bg-red-100 text-red-700",
-  IN_PROGRESS: "bg-blue-100 text-blue-700", UNASSESSED: "bg-gray-100 text-gray-600", NOT_APPLICABLE: "bg-slate-100 text-slate-500",
+  IN_PROGRESS: "bg-blue-100 text-blue-700", UNASSESSED: "bg-gray-100 text-gray-600", NOT_APPLICABLE: "bg-gray-100 text-gray-500",
   EXPIRED: "bg-red-100 text-red-700", SUSPENDED: "bg-red-100 text-red-700",
 };
 export const STATE_LABEL: Record<string, string> = {

@@ -6,30 +6,21 @@ import { api, fetcher } from "@/lib/api";
 import { toast } from "@/components/Toast";
 import { confirmAction } from "@/components/Confirm";
 import { DataTable, type Column } from "@/components/DataTable";
-import { useAuth } from "@/components/AuthProvider";
-import { accessLevel } from "@/lib/auth";
 import { X, Contact as ContactIcon, Lock } from "lucide-react";
+import { ContactSheet } from "./components/ContactSheet";
+import { STAGES, type ContactRow } from "./components/lib";
 
 // The group's shared contact book. Everyone sees who we know; phone and email show only to the
 // relationship owner and leaders (others ask the owner for an introduction).
 
-type ContactRow = {
-  id: string; name: string; organisation: string; role: string; sector: string; interests: string[]; phone?: string; email?: string;
-  contactDetailsHidden?: boolean; howMet: string; howMetDetails: string; introducedBy: string; ownerBdoId: string | null; ownerName: string | null;
-  company: string | null; stage: string; nextFollowUpDate: string | null; smeIds: string[]; consentNote: string; privateNotes?: string;
-  lastInteractionAt: string | null; canEdit: boolean;
-};
 type Full = ContactRow & {
   clients: { id: string; name: string }[];
   interactions: { id: string; date: string; type: string; summary: string; attendees: string; loggedByName: string | null }[];
   commitments: { id: string; description: string; owedBy: string; ownerName: string | null; dueDate: string | null; status: string }[];
 };
 
-const STAGES = ["NEW", "DEVELOPING", "ACTIVE", "STRONG", "DORMANT"];
-const MET = ["MEETING", "REFERRAL", "EVENT", "PARTNERSHIP", "OTHER"];
 const t = (s: string) => s.charAt(0) + s.slice(1).toLowerCase().replace(/_/g, " ");
 const showDate = (s?: string | null) => (s ? new Date(s).toLocaleDateString() : "—");
-const errText = (e: unknown, f: string) => (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? f;
 // Theme-aware: bg-surface / text-foreground / border-border / text-muted all flip with data-theme.
 const inputCls = "w-full border border-border bg-surface text-foreground placeholder:text-muted rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30";
 // DORMANT uses the gray scale (not slate) so it flips with the dark theme.
@@ -78,7 +69,7 @@ export default function ContactsPage() {
         }
       />
       {openId && <ContactDrawer id={openId} onClose={() => setOpenId(null)} onEdit={(c) => { setOpenId(null); setEditing(c); }} />}
-      {editing && <ContactModal contact={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} onOpen={(id) => { setEditing(null); setOpenId(id); }} />}
+      {editing && <ContactSheet contact={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} onOpen={(id) => { setEditing(null); setOpenId(id); }} />}
     </div>
   );
 }
@@ -167,91 +158,4 @@ function ContactDrawer({ id, onClose, onEdit }: { id: string; onClose: () => voi
 
 function Item({ l, v }: { l: string; v?: string | null }) {
   return <div><dt className="text-xs text-gray-400">{l}</dt><dd className="text-gray-800 mt-0.5 whitespace-pre-wrap">{v || "—"}</dd></div>;
-}
-
-function ContactModal({ contact, onClose, onSaved, onOpen }: { contact: ContactRow | null; onClose: () => void; onSaved: () => void; onOpen: (id: string) => void }) {
-  const { user } = useAuth();
-  const { data: bdos = [] } = useQuery<{ id: string; name: string }[]>({ queryKey: ["bdos"], queryFn: () => fetcher("/bdo") });
-  const { data: clientRes } = useQuery<{ data: { id: string; companyName: string }[] }>({ queryKey: ["sme-options"], queryFn: () => fetcher("/sme") });
-  const clients = clientRes?.data ?? [];
-  const [form, setForm] = useState({
-    name: contact?.name ?? "", organisation: contact?.organisation ?? "", role: contact?.role ?? "", sector: contact?.sector ?? "",
-    interests: (contact?.interests ?? []).join(", "), phone: contact?.phone ?? "", email: contact?.email ?? "", howMet: contact?.howMet ?? "MEETING",
-    howMetDetails: contact?.howMetDetails ?? "", introducedBy: contact?.introducedBy ?? "", ownerBdoId: contact?.ownerBdoId ?? user?.bdoId ?? "",
-    stage: contact?.stage ?? "NEW", nextFollowUpDate: contact?.nextFollowUpDate?.slice(0, 10) ?? "", smeIds: contact?.smeIds ?? [] as string[],
-    consentNote: contact?.consentNote ?? "", privateNotes: contact?.privateNotes ?? "",
-  });
-  const [dups, setDups] = useState<{ id: string; name: string; organisation: string }[] | null>(null);
-  const [clientSearch, setClientSearch] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const set = (k: string, v: unknown) => setForm((f) => ({ ...f, [k]: v }));
-  const staff = !!user && accessLevel(user.role) === "STAFF";
-  const canSeePrivate = !contact || contact.privateNotes !== undefined;
-
-  const save = async () => {
-    setSaving(true); setError("");
-    if (!contact && !dups) {
-      try {
-        const found = await fetcher(`/contacts/similar?name=${encodeURIComponent(form.name)}&organisation=${encodeURIComponent(form.organisation)}`) as { id: string; name: string; organisation: string }[];
-        if (found.length) { setDups(found); setSaving(false); return; }
-      } catch { /* carry on */ }
-    }
-    const body: Record<string, unknown> = { ...form, interests: form.interests.split(",").map((x) => x.trim()).filter(Boolean), nextFollowUpDate: form.nextFollowUpDate || null, ownerBdoId: form.ownerBdoId || null };
-    if (contact?.contactDetailsHidden) { delete body.phone; delete body.email; }
-    if (!canSeePrivate) delete body.privateNotes;
-    try {
-      contact ? await api.put(`/contacts/${contact.id}`, body) : await api.post("/contacts", body);
-      toast.success(contact ? "Contact updated" : "Contact added", { description: form.name.trim() });
-      onSaved();
-    }
-    catch (e) { setError(errText(e, "Failed to save.")); } finally { setSaving(false); }
-  };
-
-  const F = (label: string, k: keyof typeof form, type = "text") => (
-    <div><label className="text-xs font-medium text-muted block mb-1">{label}</label><input type={type} value={form[k] as string} onChange={(e) => set(k, e.target.value)} className={inputCls} /></div>
-  );
-  const matches = clientSearch.trim() ? clients.filter((c) => c.companyName.toLowerCase().includes(clientSearch.toLowerCase()) && !form.smeIds.includes(c.id)).slice(0, 6) : [];
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-surface text-foreground rounded-xl shadow-xl w-full max-w-2xl max-h-[92vh] flex flex-col">
-        <div className="px-5 py-4 border-b border-border flex items-center justify-between"><h2 className="font-semibold text-foreground">{contact ? `Edit ${contact.name}` : "New contact"}</h2><button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button></div>
-        <div className="p-5 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain">
-          {error && <div className="bg-red-50 text-red-700 text-xs rounded-lg px-3 py-2">{error}</div>}
-          {dups && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm">
-              <p className="font-medium text-amber-800">Similar contacts already exist:</p>
-              {dups.map((d) => <p key={d.id} className="flex justify-between mt-1"><span>{d.name}{d.organisation ? ` · ${d.organisation}` : ""}</span><button onClick={() => onOpen(d.id)} className="text-xs font-semibold text-accent">Open</button></p>)}
-              <p className="text-xs text-amber-800 mt-1">If this is a different person, save anyway.</p>
-            </div>
-          )}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {F("Name *", "name")}{F("Organisation", "organisation")}{F("Role", "role")}{F("Sector", "sector")}
-            <div className="sm:col-span-2">{F("Interests (comma-separated)", "interests")}</div>
-            {!contact?.contactDetailsHidden && <>{F("Phone", "phone")}{F("Email", "email", "email")}</>}
-            <div><label className="text-xs font-medium text-muted block mb-1">How we met</label><select value={form.howMet} onChange={(e) => set("howMet", e.target.value)} className={inputCls}>{MET.map((m) => <option key={m} value={m}>{t(m)}</option>)}</select></div>
-            {F("Details (event, who referred…)", "howMetDetails")}
-            {F("Introduced by", "introducedBy")}
-            <div><label className="text-xs font-medium text-muted block mb-1">Relationship owner</label>
-              <select value={form.ownerBdoId} disabled={staff} onChange={(e) => set("ownerBdoId", e.target.value)} className={inputCls}><option value="">—</option>{bdos.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
-            <div><label className="text-xs font-medium text-muted block mb-1">Stage</label><select value={form.stage} onChange={(e) => set("stage", e.target.value)} className={inputCls}>{STAGES.map((s) => <option key={s} value={s}>{t(s)}</option>)}</select></div>
-            {F("Next follow-up", "nextFollowUpDate", "date")}
-            <div className="sm:col-span-2">
-              <label className="text-xs font-medium text-muted block mb-1">Linked clients</label>
-              <div className="flex flex-wrap gap-1 mb-1">{form.smeIds.map((id) => <span key={id} className="text-xs bg-accent/10 text-accent px-2 py-0.5 rounded flex items-center gap-1">{clients.find((c) => c.id === id)?.companyName ?? "Client"}<button onClick={() => set("smeIds", form.smeIds.filter((x) => x !== id))}><X size={10} /></button></span>)}</div>
-              <input value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} placeholder="Search clients to link…" className={inputCls} />
-              {matches.map((c) => <button key={c.id} onClick={() => { set("smeIds", [...form.smeIds, c.id]); setClientSearch(""); }} className="block w-full text-left text-sm px-2 py-1 hover:bg-subtle">{c.companyName}</button>)}
-            </div>
-            <div className="sm:col-span-2">{F("Consent note (Data Protection Act, 2012)", "consentNote")}</div>
-            {canSeePrivate && <div className="sm:col-span-2"><label className="text-xs font-medium text-muted block mb-1">Private notes (you and the Group Owner only)</label><textarea value={form.privateNotes} onChange={(e) => set("privateNotes", e.target.value)} rows={2} className={`${inputCls} resize-none`} /></div>}
-          </div>
-        </div>
-        <div className="px-5 py-3 border-t border-border flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm border border-border text-foreground hover:bg-subtle rounded-lg">Cancel</button>
-          <button onClick={save} disabled={saving || !form.name.trim()} className="px-4 py-2 text-sm font-medium bg-accent text-accent-foreground rounded-lg disabled:opacity-50">{saving ? "Saving…" : dups ? "Save anyway" : "Save"}</button>
-        </div>
-      </div>
-    </div>
-  );
 }

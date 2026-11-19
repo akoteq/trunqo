@@ -14,8 +14,10 @@ import { ClientSelect, type ClientOption } from "@/components/ClientSelect";
 import { AssigneesField } from "@/components/AssigneesField";
 import { GHANA_REGIONS } from "@/lib/regions";
 import Link from "next/link";
-import { X, Layers, CircleDollarSign, Wallet, TrendingUp } from "lucide-react";
 import { DealPayments } from "@/components/DealPayments";
+import {
+  BusinessCell, DItem, DealDrawer, DealsLayout, DealsSummary, DrawerMoney, Field, FilterSelect, LongField, MoneyCell, SelectField, TextArea, inputCls, labelCls,
+} from "@/components/deals/DealsUi";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 // A deal is won work: a lead becomes a client, and the client gets a deal. Sales stages live on
@@ -55,6 +57,11 @@ type Deal = {
 type BdoOption = { id: string; name: string; company: string };
 
 const INVOICE_OPTS = ["NOT_INVOICED", "INVOICED", "PAID", "OVERDUE"];
+// Deal status follows the money (dealStatus in components/deals/dealMoney).
+const STATUS_OPTS = [
+  { value: "UNPAID", label: "Unpaid" }, { value: "PARTIAL", label: "Part paid" }, { value: "PAID", label: "Paid" },
+  { value: "OVERDUE", label: "Overdue" }, { value: "CANCELLED", label: "Cancelled" },
+];
 
 const EMPTY_FORM = {
   smeId: "", businessName: "", clientName: "", email: "", telephone: "", region: "",
@@ -64,16 +71,6 @@ const EMPTY_FORM = {
   currency: "GHS", exchangeRate: "",
   nextSteps: "", nextCallDate: "", notes: "",
 };
-
-const fmt = (n: number | null | undefined) =>
-  n != null
-    ? n.toLocaleString("en-GH", { style: "currency", currency: "GHS", maximumFractionDigits: 0 })
-    : "—";
-
-const inputCls =
-  "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/30";
-const labelCls = "text-xs font-medium text-muted block mb-1";
-const selectCls = "text-sm rounded-lg border border-border bg-background px-2.5 py-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-accent/30";
 
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
@@ -91,6 +88,7 @@ export default function CompanyPipelinePage({ params }: { params: Promise<{ comp
   const [showForm, setShowForm]         = useState(false);
   const [detail, setDetail]             = useState<Deal | null>(null);
   const [prefill, setPrefill]           = useState<NewDealLink | null>(null);
+  const [filters, setFilters]           = useState({ bdo: "", priority: "", status: "" });
   useNewDealLink(useCallback((link: NewDealLink) => { setPrefill(link); setEditing(null); setShowForm(true); }, []));
 
   const { data: bdos = [] } = useQuery<BdoOption[]>({
@@ -120,70 +118,55 @@ export default function CompanyPipelinePage({ params }: { params: Promise<{ comp
     onError: (err) => toast.failed("Couldn't delete this deal", err),
   });
 
+  const companyBdos = bdos.filter((b) => b.company === companyKey);
+  // Filters run here: the company's deals are already loaded in one go.
+  const shown = deals.filter((d) =>
+    (!filters.bdo || d.bdoId === filters.bdo) && (!filters.priority || d.priority === filters.priority) && (!filters.status || dealStatus(d) === filters.status));
   const totalRevenue  = deals.reduce((s, d) => s + (d.revenueReceivedGhs ?? 0), 0);
   const live = deals.filter((d) => d.dealStage !== "CLOSED_LOST");
   const totalValue = live.reduce((s, d) => s + (d.revenuePotentialGhs ?? 0), 0);
   const totalBalance = live.reduce((s, d) => s + (d.balanceGhs ?? 0), 0);
 
   const columns = [
-    {
-      key: "businessName", label: "Business", sortable: true,
-      render: (r: Deal) => (
-        <button onClick={() => setDetail(r)} className="block max-w-[180px] truncate text-left font-semibold text-accent hover:underline">
-          {r.businessName}
-        </button>
-      ),
-    },
+    { key: "businessName", label: "Business", sortable: true, render: (r: Deal) => <BusinessCell name={r.businessName} onOpen={() => setDetail(r)} /> },
     { key: "clientName", label: "Client",   render: (r: Deal) => r.clientName ?? "—" },
     { key: "industry",   label: "Industry", render: (r: Deal) => r.industry   ?? "—" },
     { key: "paymentStatus", label: "Status", render: (r: Deal) => <DealStatusBadge deal={r} /> },
     { key: "priority",   label: "Priority", sortable: true, render: (r: Deal) => <PriorityBadge  value={r.priority} /> },
-    { key: "dealValue", label: "Deal value", render: (r: Deal) => <span className="tabular-nums text-foreground">{dealValueOf(r) ? `${r.currency ?? "GHS"} ${Number(dealValueOf(r)).toLocaleString()}` : "—"}</span> },
-    {
-      key: "revenueReceivedGhs", label: "Received",
-      render: (r: Deal) => <span className="font-medium tabular-nums text-foreground">{dealMoneyText(r.revenueReceivedGhs ?? 0, r)}</span>,
-    },
-    {
-      key: "balanceGhs", label: "Balance",
-      render: (r: Deal) => (
-        <span className={`tabular-nums ${r.balanceGhs && r.balanceGhs > 0 ? "font-medium text-accent" : "text-muted"}`}>
-          {dealStatus(r) === "CANCELLED" ? "—" : dealMoneyText(r.balanceGhs, r)}
-        </span>
-      ),
-    },
+    { key: "dealValue", label: "Deal value", render: (r: Deal) => <MoneyCell text={dealValueOf(r) ? `${r.currency ?? "GHS"} ${Number(dealValueOf(r)).toLocaleString()}` : "—"} /> },
+    { key: "revenueReceivedGhs", label: "Received", render: (r: Deal) => <MoneyCell strong text={dealMoneyText(r.revenueReceivedGhs ?? 0, r)} /> },
+    { key: "balanceGhs", label: "Balance", render: (r: Deal) => <MoneyCell highlight={!!r.balanceGhs && r.balanceGhs > 0} text={dealStatus(r) === "CANCELLED" ? "—" : dealMoneyText(r.balanceGhs, r)} /> },
     { key: "invoiceStatus", label: "Invoice", sortable: true, render: (r: Deal) => <InvoiceStatusBadge value={r.invoiceStatus ?? "NOT_INVOICED"} /> },
     { key: "bdo", label: "BDO", render: (r: Deal) => r.bdo?.name ?? "—" },
   ];
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="mx-auto max-w-6xl space-y-6 p-4 md:p-8">
-        <div className="border-b border-dashed border-border pb-5">
-          <h1 className="font-serif text-[1.75rem] leading-[1.15] text-foreground md:text-[2rem]">{label}</h1>
-          <p className="mt-1 text-sm text-muted">Deals: won work, money received and balance</p>
-        </div>
+    <DealsLayout title={`${label} deals`} subtitle="Won work: what each deal is worth, the money received and the balance still to come in." onAdd={() => { setEditing(null); setShowForm(true); }}>
+        <DealsSummary count={deals.length} value={totalValue} received={totalRevenue} balance={totalBalance} />
 
-        {/* Summary KPI row */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:gap-4">
-          <KpiTile icon={Layers} label="Total deals" value={deals.length} />
-          <KpiTile icon={Wallet} label="Deal value" value={fmt(totalValue)} />
-          <KpiTile icon={CircleDollarSign} label="Received" value={fmt(totalRevenue)} />
-          <KpiTile icon={TrendingUp} label="Balance" value={fmt(totalBalance)} />
-        </div>
-
-        <div>
-          <DataTable
-            columns={columns}
-            data={deals}
-            isLoading={isLoading}
-            title={`${deals.length} deal${deals.length !== 1 ? "s" : ""}`}
-            onAdd={() => { setEditing(null); setShowForm(true); }}
-            onEdit={(row) => { setEditing(row); setShowForm(true); }}
-            onDelete={(row) => {
-              confirmAction({ title: `Delete the deal for ${row.businessName}?`, body: "This can't be undone.", confirmLabel: "Delete deal" }).then((ok) => { if (ok) deleteMutation.mutate(row.id); });
-            }}
-          />
-        </div>
+        <DataTable
+          columns={columns}
+          data={shown}
+          isLoading={isLoading}
+          title={`${shown.length} deal${shown.length !== 1 ? "s" : ""}`}
+          onAdd={() => { setEditing(null); setShowForm(true); }}
+          onEdit={(row) => { setEditing(row); setShowForm(true); }}
+          onDelete={(row) => {
+            confirmAction({ title: `Delete the deal for ${row.businessName}?`, body: "This can't be undone.", confirmLabel: "Delete deal" }).then((ok) => { if (ok) deleteMutation.mutate(row.id); });
+          }}
+          filterBar={
+            <div className="flex flex-wrap gap-2">
+              {companyBdos.length > 0 && (
+                <FilterSelect label="BDO" value={filters.bdo} onChange={(v) => setFilters((f) => ({ ...f, bdo: v }))}
+                  options={[{ value: "", label: "All BDOs" }, ...companyBdos.map((b) => ({ value: b.id, label: b.name }))]} />
+              )}
+              <FilterSelect label="Status" value={filters.status} onChange={(v) => setFilters((f) => ({ ...f, status: v }))}
+                options={[{ value: "", label: "All statuses" }, ...STATUS_OPTS]} />
+              <FilterSelect label="Priority" value={filters.priority} onChange={(v) => setFilters((f) => ({ ...f, priority: v }))}
+                options={[{ value: "", label: "All priorities" }, { value: "HIGH", label: "High" }, { value: "MEDIUM", label: "Medium" }, { value: "LOW", label: "Low" }]} />
+            </div>
+          }
+        />
 
         {showForm && (
           <DealFormModal
@@ -205,25 +188,7 @@ export default function CompanyPipelinePage({ params }: { params: Promise<{ comp
             onChanged={() => { setDetail(null); invalidate(); }}
           />
         )}
-      </div>
-    </div>
-  );
-}
-
-// ─── KPI tile ──────────────────────────────────────────────────────────────────
-// Matches the StatTile/MoneyTile pattern from the Company Dashboard page.
-
-function KpiTile({ icon: Icon, label, value }: { icon: React.ComponentType<{ size?: number; strokeWidth?: number }>; label: string; value: string | number }) {
-  return (
-    <div className="rounded-2xl border border-border bg-surface px-5 py-5">
-      <div className="flex items-center gap-2">
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent/10 text-accent">
-          <Icon size={13} strokeWidth={2.25} />
-        </span>
-        <span className="text-[11px] font-semibold uppercase tracking-[0.15em] text-muted">{label}</span>
-      </div>
-      <div className="mt-2.5 font-serif text-xl leading-none tabular-nums text-foreground md:text-2xl">{value}</div>
-    </div>
+    </DealsLayout>
   );
 }
 
@@ -373,14 +338,8 @@ function DealFormModal({
             </SelectField>
             <Field label="Next call date" value={form.nextCallDate} onChange={(v) => set("nextCallDate", v)} type="date" />
           </div>
-          <div>
-            <label className={labelCls}>Next steps</label>
-            <textarea value={form.nextSteps} onChange={(e) => set("nextSteps", e.target.value)} rows={2} className={`${inputCls} resize-none`} />
-          </div>
-          <div>
-            <label className={labelCls}>Notes</label>
-            <textarea value={form.notes} onChange={(e) => set("notes", e.target.value)} rows={2} className={`${inputCls} resize-none`} />
-          </div>
+          <TextArea label="Next steps" value={form.nextSteps} onChange={(v) => set("nextSteps", v)} />
+          <TextArea label="Notes" value={form.notes} onChange={(v) => set("notes", v)} />
         </div>
       )}
       {step === 2 && (
@@ -399,83 +358,31 @@ function DealFormModal({
 
 function DetailDrawer({ deal, onClose, onEdit, onChanged }: { deal: Deal; onClose: () => void; onEdit: () => void; onChanged: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-foreground/30" onClick={onClose} />
-      <div className="relative flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-border bg-surface shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
-          <div>
-            <h2 className="font-serif text-lg text-foreground">{deal.businessName}</h2>
-            <p className="mt-0.5 text-xs text-muted">{deal.clientName ?? "No client name"}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={onEdit} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground hover:opacity-90">Edit</button>
-            <button onClick={onClose} className="text-muted hover:text-foreground"><X size={18} /></button>
-          </div>
-        </div>
-        <div className="space-y-4 p-5">
-          <div className="flex flex-wrap gap-2">
-            <DealStatusBadge deal={deal} />
-            <PriorityBadge   value={deal.priority} />
-          </div>
-          <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
-            <DItem label="Email"            value={deal.email} />
-            <DItem label="Telephone"        value={deal.telephone} />
-            <DItem label="Region"           value={deal.region} />
-            <DItem label="Industry"         value={deal.industry} />
-            <DItem label="BDO"              value={deal.bdo?.name} />
-            <DItem label="Invoice status"   value={deal.invoiceStatus ? deal.invoiceStatus.replace(/_/g, " ") : null} />
-            <DItem label="Deal value"       value={dealValueOf(deal) ? `${deal.currency ?? "GHS"} ${Number(dealValueOf(deal)).toLocaleString()}` : null} />
-            <DItem label="Received"         value={dealMoneyText(deal.revenueReceivedGhs ?? 0, deal)} />
-            <DItem label="Balance"          value={dealStatus(deal) === "CANCELLED" ? null : dealMoneyText(deal.balanceGhs, deal)} />
-            <DItem label="Expected payment" value={deal.expectedPaymentDate ? new Date(deal.expectedPaymentDate).toLocaleDateString() : null} />
-            <DItem label="Next call"        value={deal.nextCallDate ? new Date(deal.nextCallDate).toLocaleDateString() : null} />
-          </dl>
-          <DealPayments source="COMPANY" dealId={deal.id} company={deal.company} dealName={deal.businessName} cancelled={deal.dealStage === "CLOSED_LOST"} endpoint={`/company-deals/${deal.id}`} onChanged={onChanged} />
-          {deal.nextSteps && (
-            <div>
-              <p className="mb-1.5 text-xs font-semibold text-muted">Next steps</p>
-              <p className="rounded-lg bg-background p-3 text-sm text-foreground">{deal.nextSteps}</p>
-            </div>
-          )}
-          {deal.notes && (
-            <div>
-              <p className="mb-1.5 text-xs font-semibold text-muted">Notes</p>
-              <p className="whitespace-pre-wrap rounded-lg bg-background p-3 text-sm text-foreground">{deal.notes}</p>
-            </div>
-          )}
-        </div>
+    <DealDrawer title={deal.businessName} subtitle={deal.clientName ?? "No client contact"} onClose={onClose} onEdit={onEdit}>
+      <div className="flex flex-wrap gap-2">
+        <DealStatusBadge deal={deal} />
+        <PriorityBadge value={deal.priority} />
+        <InvoiceStatusBadge value={deal.invoiceStatus ?? "NOT_INVOICED"} />
       </div>
-    </div>
-  );
-}
-
-// ─── Helpers ───────────────────────────────────────────────────────────────────
-
-function Field({ label, value, onChange, type = "text", span }: { label: string; value: string; onChange: (v: string) => void; type?: string; span?: number }) {
-  return (
-    <div className={span === 2 ? "col-span-2" : ""}>
-      <label className={labelCls}>{label}</label>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className={inputCls} />
-    </div>
-  );
-}
-
-function SelectField({ label, value, onChange, children }: { label: string; value: string; onChange: (v: string) => void; children: React.ReactNode }) {
-  return (
-    <div>
-      <label className={labelCls}>{label}</label>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={inputCls}>
-        {children}
-      </select>
-    </div>
-  );
-}
-
-function DItem({ label, value }: { label: string; value: string | null | undefined }) {
-  return (
-    <div>
-      <dt className="text-xs font-medium text-muted">{label}</dt>
-      <dd className="mt-0.5 text-foreground">{value ?? "—"}</dd>
-    </div>
+      <DrawerMoney
+        value={dealValueOf(deal) ? `${deal.currency ?? "GHS"} ${Number(dealValueOf(deal)).toLocaleString()}` : "—"}
+        received={dealMoneyText(deal.revenueReceivedGhs ?? 0, deal)}
+        balance={dealStatus(deal) === "CANCELLED" ? "—" : dealMoneyText(deal.balanceGhs, deal)}
+      />
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
+        <DItem label="Email" value={deal.email} />
+        <DItem label="Telephone" value={deal.telephone} />
+        <DItem label="Region" value={deal.region} />
+        <DItem label="Industry" value={deal.industry} />
+        <DItem label="Value chain" value={deal.valueChain} />
+        <DItem label="Product" value={deal.product} />
+        <DItem label="BDO" value={deal.bdo?.name} />
+        <DItem label="Expected payment" value={deal.expectedPaymentDate ? new Date(deal.expectedPaymentDate).toLocaleDateString() : null} />
+        <DItem label="Next call" value={deal.nextCallDate ? new Date(deal.nextCallDate).toLocaleDateString() : null} />
+      </dl>
+      <DealPayments source="COMPANY" dealId={deal.id} company={deal.company} dealName={deal.businessName} cancelled={deal.dealStage === "CLOSED_LOST"} endpoint={`/company-deals/${deal.id}`} onChanged={onChanged} />
+      {deal.nextSteps && <LongField label="Next steps" value={deal.nextSteps} accent />}
+      {deal.notes && <LongField label="Notes" value={deal.notes} />}
+    </DealDrawer>
   );
 }
