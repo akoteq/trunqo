@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clsx } from "clsx";
 import { AtSign, Bell, CheckCheck, Loader2, X } from "lucide-react";
 import { api, fetcher } from "@/lib/api";
 import { toast } from "@/components/Toast";
+import { playSound } from "@/lib/sounds";
+import { SoundSettingsButton, SoundSettingsPanel } from "./SoundSettings";
 import { useAuth } from "@/components/AuthProvider";
 import { useSocketEvent } from "@/components/RealtimeProvider";
 import { DEEP_LINK_EVENT, type EntityType } from "@/lib/mentions";
@@ -20,9 +22,9 @@ import { timeAgo } from "@/components/comments/time";
 
 export type AppNotification = {
   id: string;
-  type: "MENTION" | "TASK_ASSIGNED";
+  type: "MENTION" | "TASK_ASSIGNED" | "COMPLIANCE_TO_VERIFY" | "COMPLIANCE_SENT_BACK";
   actorName: string | null;
-  entityType: EntityType;
+  entityType: EntityType | "COMPLIANCE";
   entityId: string;
   entityTitle: string | null;
   commentId: string | null;
@@ -35,7 +37,7 @@ export type AppNotification = {
 
 const COUNT_KEY = ["notifications", "count"];
 const LIST_KEY = ["notifications", "inbox"];
-const NOUN: Record<EntityType, string> = { TASK: "task", LEAD: "lead", PROJECT: "project", KPI: "KPI" };
+const NOUN: Record<EntityType | "COMPLIANCE", string> = { TASK: "task", LEAD: "lead", PROJECT: "project", KPI: "KPI", COMPLIANCE: "compliance" };
 
 export function useUnreadCount() {
   const { user } = useAuth();
@@ -60,7 +62,9 @@ export function useOpenLink() {
 }
 
 const headline = (n: AppNotification) =>
-  n.type === "TASK_ASSIGNED"
+  n.type === "COMPLIANCE_TO_VERIFY" ? `Ready to verify: ${n.entityTitle ?? "a compliance record"}`
+  : n.type === "COMPLIANCE_SENT_BACK" ? `${n.actorName ?? "Someone"} sent back ${n.entityTitle ?? "a compliance record"}`
+  : n.type === "TASK_ASSIGNED"
     ? `${n.actorName ?? "Someone"} gave you a task: ${n.entityTitle ?? "a task"}`
     : `${n.actorName ?? "Someone"} mentioned you ${n.commentId ? "on" : "in"} ${n.entityTitle ?? `a ${NOUN[n.entityType]}`}`;
 
@@ -71,6 +75,7 @@ export function NotificationsListener() {
   useSocketEvent<{ notification: AppNotification; unread: number }>("notification:new", ({ notification, unread }) => {
     qc.setQueryData(COUNT_KEY, { unread });
     qc.invalidateQueries({ queryKey: LIST_KEY });
+    playSound("notification", notification.id);
     toast.info(headline(notification), {
       description: notification.excerpt ?? undefined,
       action: notification.link ? { label: "Open", onClick: () => open(notification.link!) } : undefined,
@@ -142,6 +147,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
     onError: (err) => toast.failed("Couldn't mark them read", err),
   });
 
+  const [soundsOpen, setSoundsOpen] = useState(false);
   const click = (n: AppNotification) => {
     if (!n.readAt) {
       qc.setQueryData<AppNotification[]>(LIST_KEY, (list) => list?.map((x) => (x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x)));
@@ -166,6 +172,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
           <h2 className="font-serif text-lg text-foreground">Notifications</h2>
           {unread > 0 && <span className="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-semibold text-accent">{unread} new</span>}
           <div className="ml-auto flex items-center gap-1">
+            <SoundSettingsButton open={soundsOpen} onToggle={() => setSoundsOpen((v) => !v)} />
             {unread > 0 && (
               <button
                 onClick={() => readAll.mutate()} disabled={readAll.isPending}
@@ -178,6 +185,7 @@ export function NotificationsPanel({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
+        {soundsOpen && <SoundSettingsPanel />}
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
             <p className="flex items-center gap-2 px-4 py-6 text-sm text-muted"><Loader2 size={14} className="animate-spin" /> Loading…</p>

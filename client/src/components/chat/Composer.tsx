@@ -16,6 +16,13 @@ import { fileSize, type ChatAttachment } from "@/lib/chat";
 
 const MAX_FILES = 5, MAX_BYTES = 20 * 1024 * 1024, MAX_BODY = 4000;
 
+// The server's anti-spam answer (429) with how many seconds to wait, or null for any other error.
+const waitFrom = (err: unknown): { seconds: number; message: string } | null => {
+  const r = (err as { response?: { status?: number; data?: { retryAfter?: number; error?: string } } })?.response;
+  if (r?.status !== 429) return null;
+  return { seconds: Math.max(1, Number(r.data?.retryAfter) || 5), message: r.data?.error ?? "You're sending messages too quickly." };
+};
+
 type Pending = { key: string; name: string; size: number; preview?: string; done?: ChatAttachment; failed?: boolean };
 
 async function upload(file: File): Promise<ChatAttachment> {
@@ -36,6 +43,13 @@ export function Composer({ conversationId, onSend, disabledReason }: {
   const [files, setFiles] = useState<Pending[]>([]);
   const [sending, setSending] = useState(false);
   const [dragging, setDragging] = useState(false);
+  // Seconds left before sending is allowed again, after the server said "too quickly".
+  const [cooldown, setCooldown] = useState(0);
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -89,7 +103,9 @@ export function Composer({ conversationId, onSend, disabledReason }: {
         }))
         .catch((err) => {
           setFiles((f) => f.map((x) => (x.key === key ? { ...x, failed: true } : x)));
-          toast.failed(`Couldn't upload ${file.name}`, err);
+          const wait = waitFrom(err);
+          if (wait) toast.warning(`Couldn't upload ${file.name}`, { description: wait.message });
+          else toast.failed(`Couldn't upload ${file.name}`, err);
         });
     }
   };
@@ -101,7 +117,7 @@ export function Composer({ conversationId, onSend, disabledReason }: {
 
   const uploading = files.some((f) => !f.done && !f.failed);
   const ready = files.filter((f) => f.done).map((f) => f.done!);
-  const canSend = !sending && !uploading && (text.trim().length > 0 || ready.length > 0) && text.length <= MAX_BODY;
+  const canSend = !sending && !uploading && cooldown <= 0 && (text.trim().length > 0 || ready.length > 0) && text.length <= MAX_BODY;
 
   const send = async () => {
     if (!canSend) return;
@@ -113,7 +129,10 @@ export function Composer({ conversationId, onSend, disabledReason }: {
       setText("");
       setFiles([]);
     } catch (err) {
-      toast.failed("Couldn't send your message", err);
+      // Your text stays in the box either way, so nothing is lost.
+      const wait = waitFrom(err);
+      if (wait) { setCooldown(wait.seconds); toast.warning("Slow down a little", { description: wait.message }); }
+      else toast.failed("Couldn't send your message", err);
     } finally {
       setSending(false);
       taRef.current?.focus();
@@ -192,11 +211,14 @@ export function Composer({ conversationId, onSend, disabledReason }: {
         <button
           onClick={send} disabled={!canSend}
           className="mb-0.5 shrink-0 rounded-xl bg-accent p-2.5 text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-          aria-label="Send" title={uploading ? "Waiting for files to upload" : "Send (Enter)"}
+          aria-label="Send" title={cooldown > 0 ? `Wait ${cooldown}s` : uploading ? "Waiting for files to upload" : "Send (Enter)"}
         >
           {sending ? <Loader2 size={17} className="animate-spin" /> : <Send size={17} />}
         </button>
       </div>
+      {cooldown > 0 && (
+        <p role="status" className="mt-1 text-[11px] text-amber-700">You&apos;re sending messages quickly. You can send again in {cooldown}s.</p>
+      )}
       {text.length > MAX_BODY - 200 && (
         <p className={clsx("mt-1 text-right text-[11px]", text.length > MAX_BODY ? "text-red-600" : "text-muted")}>{text.length.toLocaleString()} / {MAX_BODY.toLocaleString()}</p>
       )}
