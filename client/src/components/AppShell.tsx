@@ -11,6 +11,7 @@ import { useAuth } from "./AuthProvider";
 import { isExternal, externalCanOpen } from "@/lib/auth";
 import { NotificationBell, NotificationsListener, NotificationsPanel } from "./notifications/Notifications";
 import { ChatListener } from "./chat/ChatListener";
+import { AlertSounds } from "./AlertSounds";
 import { MessagesButton } from "./chat/MessagesButton";
 
 const NO_SHELL = ["/login", "/change-password"];
@@ -78,6 +79,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {!external && pathname !== "/messages" && <AssistantLauncher />}
       <NotificationsListener />
       <ChatListener />
+      <AlertSounds />
       {notificationsOpen && <NotificationsPanel onClose={closeNotifications} />}
       <Toaster />
       <ConfirmHost />

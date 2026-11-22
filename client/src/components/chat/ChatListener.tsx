@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetcher } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
 import { toast } from "@/components/Toast";
+import { playSound } from "@/lib/sounds";
 import { useSocket, useSocketEvent } from "@/components/RealtimeProvider";
 import { useOpenLink } from "@/components/notifications/Notifications";
 import { chatKeys, chatStore, messagesPath, type ChatConversation, type ChatMessage } from "@/lib/chat";
@@ -57,6 +58,7 @@ export function ChatListener() {
     const onScreen = chatStore.get().active === conversationId && document.visibilityState === "visible";
     if (onScreen) { markRead(qc, conversationId); return; }
     if (known?.muted) return;
+    playSound("message", message.id);
     toast.info(known?.other.name ? `Message from ${known.other.name}` : "New message", {
       description: preview(message).slice(0, 120),
       action: { label: "Open", onClick: () => open(messagesPath(conversationId)) },

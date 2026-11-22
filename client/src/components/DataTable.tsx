@@ -44,6 +44,11 @@ type Props<T extends { id: string }> = {
   title?: string;
   /** Initial rows per page. Defaults to 25. */
   pageSize?: number;
+  /**
+   * Turns on row checkboxes. Called with the selected rows (across pages and filters) to render
+   * the buttons in the selection bar; call `clear` after acting on them.
+   */
+  bulkActions?: (rows: T[], clear: () => void) => React.ReactNode;
 };
 
 export function DataTable<T extends { id: string }>({
@@ -57,7 +62,13 @@ export function DataTable<T extends { id: string }>({
   filterBar,
   title,
   pageSize: initialPageSize = 25,
+  bulkActions,
 }: Props<T>) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Rows that disappear (deleted, reloaded) drop out of the selection on their own.
+  const selectedRows = bulkActions ? data.filter((r) => selected.has(r.id)) : [];
+  const clearSelection = () => setSelected(new Set());
+  const toggleRow = (id: string) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const [search, setSearch] = useState("");
   // Links from the assistant and alerts (e.g. /tasks?q=Gym%20Farms) open with the search filled in.
   useEffect(() => {
@@ -94,6 +105,14 @@ export function DataTable<T extends { id: string }>({
   const currentPage = Math.min(page, totalPages);
   const start = (currentPage - 1) * pageSize;
   const paginated = sorted.slice(start, start + pageSize);
+  const pageAllSelected = paginated.length > 0 && paginated.every((r) => selected.has(r.id));
+  const allMatchingSelected = sorted.length > 0 && sorted.every((r) => selected.has(r.id));
+  const togglePage = () => setSelected((s) => {
+    const n = new Set(s);
+    for (const r of paginated) { if (pageAllSelected) n.delete(r.id); else n.add(r.id); }
+    return n;
+  });
+  const extraCols = (bulkActions ? 1 : 0) + 1;
 
   const handleExport = () => {
     const headerRow = columns.map((c) => csvEscape(c.label)).join(",");
@@ -138,6 +157,19 @@ export function DataTable<T extends { id: string }>({
           </div>
         </div>
 
+        {bulkActions && selectedRows.length > 0 && (
+          <div className="flex items-center gap-x-3 gap-y-2 flex-wrap rounded-lg bg-accent/10 px-3 py-2 text-sm">
+            <span className="font-medium text-foreground">{selectedRows.length} selected</span>
+            {pageAllSelected && !allMatchingSelected && (
+              <button onClick={() => setSelected(new Set(sorted.map((r) => r.id)))} className="text-accent hover:underline">
+                Select all {sorted.length}{sorted.length !== data.length ? " matching" : ""}
+              </button>
+            )}
+            <button onClick={clearSelection} className="text-muted hover:text-foreground">Clear</button>
+            <div className="ml-auto flex items-center gap-2">{bulkActions(selectedRows, clearSelection)}</div>
+          </div>
+        )}
+
         {/* Bottom row: filters + search */}
         <div className="flex flex-col sm:flex-row gap-2">
           {filterBar && (
@@ -159,6 +191,11 @@ export function DataTable<T extends { id: string }>({
         <table className="w-full text-sm">
           <thead className="border-b border-border">
             <tr>
+              {bulkActions && (
+                <th className="pl-4 pr-0 py-2.5 w-8">
+                  <input type="checkbox" className="accent-accent align-middle" aria-label="Select this page" checked={pageAllSelected} onChange={togglePage} disabled={!paginated.length} />
+                </th>
+              )}
               {columns.map((col) => (
                 <th
                   key={String(col.key)}
@@ -183,19 +220,24 @@ export function DataTable<T extends { id: string }>({
           <tbody className="divide-y divide-border/60">
             {isLoading ? (
               <tr>
-                <td colSpan={columns.length + 1} className="px-4 py-10 text-center text-muted">
+                <td colSpan={columns.length + extraCols} className="px-4 py-10 text-center text-muted">
                   Loading…
                 </td>
               </tr>
             ) : sorted.length === 0 ? (
               <tr>
-                <td colSpan={columns.length + 1} className="px-4 py-12 text-center text-muted">
+                <td colSpan={columns.length + extraCols} className="px-4 py-12 text-center text-muted">
                   No records found
                 </td>
               </tr>
             ) : (
               paginated.map((row) => (
-                <tr key={row.id} className="hover:bg-primary/[0.03] transition-colors">
+                <tr key={row.id} className={clsx("hover:bg-primary/[0.03] transition-colors", selected.has(row.id) && "bg-accent/5")}>
+                  {bulkActions && (
+                    <td className="pl-4 pr-0 py-3 w-8">
+                      <input type="checkbox" className="accent-accent align-middle" aria-label="Select row" checked={selected.has(row.id)} onChange={() => toggleRow(row.id)} />
+                    </td>
+                  )}
                   {columns.map((col) => (
                     <td key={String(col.key)} className="px-4 py-3 text-foreground max-w-xs truncate">
                       {col.render
