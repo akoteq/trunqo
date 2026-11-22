@@ -26,6 +26,9 @@ export type Task = {
   startDate: string | null;
   bdoId: string | null;
   bdo: { name: string } | null;
+  // Who gave the task out (null when its owner made it, or on older tasks).
+  assignedByBdoId?: string | null;
+  assignedBy?: { id: string; name: string } | null;
   status: string;
   company: string | null;
   notes: string | null;
@@ -108,7 +111,7 @@ export type TaskProject = {
   canManage: boolean;
 };
 
-export type TabKey = "all" | "mine" | "overdue" | "week" | "proposals" | "approvals";
+export type TabKey = "all" | "mine" | "given" | "overdue" | "week" | "proposals" | "approvals";
 export type SortKey = "soonest" | "latest" | "priority";
 export type GroupKey = "overdue" | "blocked" | "progress" | "todo" | "done";
 

@@ -14,8 +14,10 @@ import { isStaff } from "@/lib/auth";
 import { ClientSelect, type ClientOption } from "@/components/ClientSelect";
 import { AssigneesField } from "@/components/AssigneesField";
 import Link from "next/link";
-import { X } from "lucide-react";
 import { DealPayments } from "@/components/DealPayments";
+import {
+  BusinessCell, DItem, DealDrawer, DealsLayout, DealsSummary, DrawerMoney, Field, FilterSelect, FormSelect, LongField, MoneyCell, SelectField, TextArea, TierBadge, inputCls, labelCls,
+} from "@/components/deals/DealsUi";
 
 type TradelineDeal = {
   id: string;
@@ -63,7 +65,6 @@ const EMPTY_FORM = {
   currency: "GHS", exchangeRate: "",
 };
 
-const fmt = (n: number) => n.toLocaleString();
 
 export default function TradelinePipelinePage() {
   const { user } = useAuth();
@@ -116,66 +117,37 @@ export default function TradelinePipelinePage() {
   const totalRevenue = data.reduce((s, d) => s + (d.revenueReceivedGhs ?? 0), 0);
   const totalOutstanding = live.reduce((s, d) => s + (d.balanceGhs ?? 0), 0);
 
+  const openNew = () => { setEditing(null); setShowForm(true); };
+
   const columns = [
-    { key: "serialNo", label: "#", sortable: true, width: "50px", render: (r: TradelineDeal) => r.serialNo ?? "—" },
-    {
-      key: "businessName", label: "Business", sortable: true,
-      render: (r: TradelineDeal) => (
-        <button onClick={() => setDetail(r)} className="text-left font-medium text-accent hover:underline truncate max-w-[180px] block">
-          {r.businessName}
-        </button>
-      ),
-    },
+    { key: "serialNo", label: "#", sortable: true, width: "50px", render: (r: TradelineDeal) => <span className="tabular-nums text-muted">{r.serialNo ?? "—"}</span> },
+    { key: "businessName", label: "Business", sortable: true, render: (r: TradelineDeal) => <BusinessCell name={r.businessName} onOpen={() => setDetail(r)} /> },
     { key: "valueChain", label: "Value Chain", render: (r: TradelineDeal) => r.valueChain ?? "—" },
     { key: "bdo", label: "BDO", render: (r: TradelineDeal) => r.bdo?.name ?? "—" },
-    {
-      key: "tier", label: "Tier", sortable: true,
-      render: (r: TradelineDeal) => (
-        <span className="text-xs font-medium text-accent bg-accent/10 px-2 py-0.5 rounded-full">
-          {r.tier?.replace("_", " ")}
-        </span>
-      ),
-    },
+    { key: "tier", label: "Tier", sortable: true, render: (r: TradelineDeal) => <TierBadge tier={r.tier} /> },
     { key: "priority", label: "Priority", render: (r: TradelineDeal) => <PriorityBadge value={r.priority} />, sortable: true },
-    { key: "dealValue", label: "Deal value", render: (r: TradelineDeal) => dealValueOf(r) ? `${r.currency ?? "GHS"} ${Number(dealValueOf(r)).toLocaleString()}` : "—", sortable: true },
-    { key: "revenueReceivedGhs", label: "Received (GHS)", render: (r: TradelineDeal) => r.revenueReceivedGhs ? fmt(r.revenueReceivedGhs) : "—", sortable: true },
-    { key: "balanceGhs", label: "Balance (GHS)", render: (r: TradelineDeal) => r.balanceGhs ? fmt(r.balanceGhs) : "—", sortable: true },
+    { key: "dealValue", label: "Deal value", sortable: true, render: (r: TradelineDeal) => <MoneyCell text={dealValueOf(r) ? `${r.currency ?? "GHS"} ${Number(dealValueOf(r)).toLocaleString()}` : "—"} /> },
+    { key: "revenueReceivedGhs", label: "Received", sortable: true, render: (r: TradelineDeal) => <MoneyCell strong text={dealMoneyText(r.revenueReceivedGhs ?? 0, r)} /> },
+    { key: "balanceGhs", label: "Balance", sortable: true, render: (r: TradelineDeal) => <MoneyCell highlight={!!r.balanceGhs && r.balanceGhs > 0} text={dealStatus(r) === "CANCELLED" ? "—" : dealMoneyText(r.balanceGhs, r)} /> },
     { key: "paymentStatus", label: "Status", render: (r: TradelineDeal) => <DealStatusBadge deal={r} /> },
     { key: "invoiceStatus", label: "Invoice", sortable: true, render: (r: TradelineDeal) => <InvoiceStatusBadge value={r.invoiceStatus ?? "NOT_INVOICED"} /> },
-    { key: "nextAction", label: "Next Action", render: (r: TradelineDeal) => <span className="truncate block max-w-[160px]">{r.nextAction ?? "—"}</span> },
+    { key: "nextAction", label: "Next action", render: (r: TradelineDeal) => <span className="block max-w-[160px] truncate text-muted">{r.nextAction ?? "—"}</span> },
   ];
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Tradeline deals</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            {isBdoRole ? "Your won work: value, money received and balance" : "Won work: value, money received and balance"}
-          </p>
-        </div>
-        <div className="flex gap-3 text-sm">
-          <div className="bg-accent/10 border border-accent/30 rounded-lg px-3 py-2 text-center">
-            <div className="text-xs text-accent font-medium">Deal value (GHS)</div>
-            <div className="font-bold text-accent">{fmt(totalValue)}</div>
-          </div>
-          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-center">
-            <div className="text-xs text-emerald-600 font-medium">Received (GHS)</div>
-            <div className="font-bold text-emerald-700">{fmt(totalRevenue)}</div>
-          </div>
-          <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-center">
-            <div className="text-xs text-red-600 font-medium">Balance (GHS)</div>
-            <div className="font-bold text-red-700">{fmt(totalOutstanding)}</div>
-          </div>
-        </div>
-      </div>
+    <DealsLayout
+      title="Tradeline deals"
+      subtitle={isBdoRole ? "Your won work: what each deal is worth, the money received and the balance still to come in." : "Won work: what each deal is worth, the money received and the balance still to come in."}
+      onAdd={openNew}
+    >
+      <DealsSummary count={data.length} value={totalValue} received={totalRevenue} balance={totalOutstanding} />
 
       <DataTable
         columns={columns}
         data={data}
         isLoading={isLoading}
         title={`${data.length} deal${data.length === 1 ? "" : "s"}`}
-        onAdd={() => { setEditing(null); setShowForm(true); }}
+        onAdd={openNew}
         onEdit={(row) => { setEditing(row); setShowForm(true); }}
         onDelete={(row) => {
           confirmAction({ title: `Delete the deal for ${row.businessName}?`, body: "This can't be undone.", confirmLabel: "Delete deal" }).then((ok) => { if (ok) deleteMutation.mutate(row.id); });
@@ -183,10 +155,10 @@ export default function TradelinePipelinePage() {
         filterBar={
           <div className="flex gap-2 flex-wrap">
             {!isBdoRole && (
-              <FilterSelect value={filters.bdo} options={[{ value: "", label: "All BDOs" }, ...tradelineBdos.map((b) => ({ value: b.name, label: b.name }))]} onChange={(v) => setFilters((f) => ({ ...f, bdo: v }))} />
+              <FilterSelect label="BDO" value={filters.bdo} options={[{ value: "", label: "All BDOs" }, ...tradelineBdos.map((b) => ({ value: b.name, label: b.name }))]} onChange={(v) => setFilters((f) => ({ ...f, bdo: v }))} />
             )}
-            <FilterSelect value={filters.tier} options={[{ value: "", label: "All Tiers" }, ...TIER_OPTS.map((t) => ({ value: t, label: t.replace("_", " ") }))]} onChange={(v) => setFilters((f) => ({ ...f, tier: v }))} />
-            <FilterSelect value={filters.priority} options={[{ value: "", label: "All Priorities" }, ...PRIORITY_OPTS.map((s) => ({ value: s, label: s }))]} onChange={(v) => setFilters((f) => ({ ...f, priority: v }))} />
+            <FilterSelect label="Tier" value={filters.tier} options={[{ value: "", label: "All tiers" }, ...TIER_OPTS.map((t) => ({ value: t, label: t.replace("_", " ") }))]} onChange={(v) => setFilters((f) => ({ ...f, tier: v }))} />
+            <FilterSelect label="Priority" value={filters.priority} options={[{ value: "", label: "All priorities" }, ...PRIORITY_OPTS.map((s) => ({ value: s, label: s.charAt(0) + s.slice(1).toLowerCase() }))]} onChange={(v) => setFilters((f) => ({ ...f, priority: v }))} />
           </div>
         }
       />
@@ -212,17 +184,7 @@ export default function TradelinePipelinePage() {
           onChanged={() => { setDetail(null); qc.invalidateQueries({ queryKey: ["tradeline"] }); }}
         />
       )}
-    </div>
-  );
-}
-
-// ─── Filter select ─────────────────────────────────────────────────────────────
-
-function FilterSelect({ value, options, onChange }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void }) {
-  return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} className="text-sm border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-accent/30">
-      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
+    </DealsLayout>
   );
 }
 
@@ -324,7 +286,7 @@ function DealFormModal({ deal, prefill, bdos, clients, isBdoRole, currentBdoId, 
                 Picking a client fills in their details. Don&apos;t see them? <Link href="/sme" className="text-accent hover:underline">Add them on the Clients page first →</Link>
               </p>
           </div>
-          <div className="sm:col-span-2"><Field label="Value Chain / Sector" value={form.valueChain} onChange={(v) => set("valueChain", v)} /></div>
+          <Field wide label="Value chain / sector" value={form.valueChain} onChange={(v) => set("valueChain", v)} />
           <Field label="Email" type="email" value={form.email} onChange={(v) => set("email", v)} />
           <Field label="Telephone" value={form.telephone} onChange={(v) => set("telephone", v)} />
         </div>
@@ -332,27 +294,24 @@ function DealFormModal({ deal, prefill, bdos, clients, isBdoRole, currentBdoId, 
       {step === 1 && (
         <div className="space-y-3">
           {!isBdoRole && (
-            <div>
-              <label className="text-xs font-medium text-gray-600 block mb-1">Who owns this deal?</label>
-              <select value={form.bdoId} onChange={(e) => set("bdoId", e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30">
-                <option value="">— Unassigned —</option>
-                {bdos.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
-            </div>
+            <SelectField label="Who owns this deal?" value={form.bdoId} onChange={(v) => set("bdoId", v)}>
+              <option value="">— Unassigned —</option>
+              {bdos.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </SelectField>
           )}
           <AssigneesField value={assigned} onChange={setAssigned} people={bdos} ownerId={form.bdoId} />
           <div className="grid grid-cols-2 gap-3">
             <FormSelect label="Tier" value={form.tier} options={TIER_OPTS} onChange={(v) => set("tier", v)} />
             <FormSelect label="Priority" value={form.priority} options={PRIORITY_OPTS} onChange={(v) => set("priority", v)} />
           </div>
-          <TextArea label="Current Status / Updates" value={form.currentStatus} onChange={(v) => set("currentStatus", v)} rows={3} />
-          <TextArea label="Next Action Required" value={form.nextAction} onChange={(v) => set("nextAction", v)} rows={2} />
+          <TextArea label="Current status / updates" value={form.currentStatus} onChange={(v) => set("currentStatus", v)} rows={3} />
+          <TextArea label="Next action required" value={form.nextAction} onChange={(v) => set("nextAction", v)} />
         </div>
       )}
       {step === 2 && (
         <div className="space-y-3">
-          <DealValueFields form={form} set={(k, v) => set(k, v)} inputClass="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30" labelClass="text-xs font-medium text-gray-600 block mb-1" />
-          <FormSelect label="Invoice Status" value={form.invoiceStatus} options={INVOICE_OPTS} onChange={(v) => set("invoiceStatus", v)} />
+          <DealValueFields form={form} set={(k, v) => set(k, v)} inputClass={inputCls} labelClass={labelCls} />
+          <FormSelect label="Invoice status" value={form.invoiceStatus} options={INVOICE_OPTS} onChange={(v) => set("invoiceStatus", v)} />
         </div>
       )}
     </WizardShell>
@@ -363,114 +322,28 @@ function DealFormModal({ deal, prefill, bdos, clients, isBdoRole, currentBdoId, 
 
 function DetailDrawer({ deal, onClose, onEdit, onChanged }: { deal: TradelineDeal; onClose: () => void; onEdit: () => void; onChanged: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative bg-white w-full max-w-xl h-full overflow-y-auto shadow-2xl flex flex-col">
-        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
-          <div>
-            <h2 className="font-semibold text-gray-900">{deal.businessName}</h2>
-            <p className="text-xs text-gray-400 mt-0.5">{deal.bizId ?? `Serial #${deal.serialNo ?? "—"}`}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={onEdit} className="px-3 py-1.5 text-xs font-medium bg-accent text-accent-foreground rounded-lg hover:opacity-90">Edit</button>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
-          </div>
-        </div>
-
-        <div className="p-5 space-y-5">
-          {/* Badges */}
-          <div className="flex flex-wrap gap-2">
-            <DealStatusBadge deal={deal} />
-            <PriorityBadge value={deal.priority} />
-            <span className="text-xs font-medium text-accent bg-accent/10 px-2 py-0.5 rounded-full">{deal.tier?.replace("_", " ")}</span>
-            <InvoiceStatusBadge value={deal.invoiceStatus ?? "NOT_INVOICED"} />
-          </div>
-
-          {/* Key fields */}
-          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
-            <DetailItem label="Value Chain" value={deal.valueChain} />
-            <DetailItem label="BDO" value={deal.bdo?.name} />
-            <DetailItem label="Email" value={deal.email} />
-            <DetailItem label="Telephone" value={deal.telephone} />
-            <DetailItem label="Expected payment" value={deal.expectedPaymentDate || deal.dueDate ? new Date((deal.expectedPaymentDate ?? deal.dueDate) as string).toLocaleDateString() : null} />
-          </dl>
-
-          {/* Revenue panel */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <RevenueCard label="Deal value" value={dealValueOf(deal) ? `${deal.currency ?? "GHS"} ${Number(dealValueOf(deal)).toLocaleString()}` : "—"} color="blue" />
-            <RevenueCard label="Received" value={dealMoneyText(deal.revenueReceivedGhs, deal)} color="green" />
-            <RevenueCard label="Balance" value={dealStatus(deal) === "CANCELLED" ? "—" : dealMoneyText(deal.balanceGhs, deal)} color="red" />
-          </div>
-
-          <DealPayments source="TRADELINE" dealId={deal.id} company="TRADELINE" dealName={deal.businessName} cancelled={deal.dealStage === "CLOSED_LOST"} endpoint={`/tradeline/${deal.id}`} onChanged={onChanged} />
-          {/* Long text */}
-          {deal.currentStatus && <LongField label="Current Status / Updates" value={deal.currentStatus} />}
-          {deal.nextAction && <LongField label="Next Action Required" value={deal.nextAction} accent />}
-        </div>
+    <DealDrawer title={deal.businessName} subtitle={deal.bizId ?? `Serial #${deal.serialNo ?? "—"}`} onClose={onClose} onEdit={onEdit}>
+      <div className="flex flex-wrap gap-2">
+        <DealStatusBadge deal={deal} />
+        <PriorityBadge value={deal.priority} />
+        <TierBadge tier={deal.tier} />
+        <InvoiceStatusBadge value={deal.invoiceStatus ?? "NOT_INVOICED"} />
       </div>
-    </div>
-  );
-}
-
-// ─── Small helpers ─────────────────────────────────────────────────────────────
-
-function Field({ label, value, onChange, type = "text", span, min }: { label: string; value: string; onChange: (v: string) => void; type?: string; span?: number; min?: number }) {
-  return (
-    <div className={span === 2 ? "col-span-2" : ""}>
-      <label className="text-xs font-medium text-gray-600 block mb-1">{label}</label>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} min={min} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30" />
-    </div>
-  );
-}
-
-function TextArea({ label, value, onChange, rows = 2 }: { label: string; value: string; onChange: (v: string) => void; rows?: number }) {
-  return (
-    <div>
-      <label className="text-xs font-medium text-gray-600 block mb-1">{label}</label>
-      <textarea value={value} onChange={(e) => onChange(e.target.value)} rows={rows} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 resize-none" />
-    </div>
-  );
-}
-
-function FormSelect({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
-  return (
-    <div>
-      <label className="text-xs font-medium text-gray-600 block mb-1">{label}</label>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30">
-        {options.map((o) => <option key={o} value={o}>{o.replace(/_/g, " ")}</option>)}
-      </select>
-    </div>
-  );
-}
-
-function DetailItem({ label, value }: { label: string; value: string | null | undefined }) {
-  return (
-    <div>
-      <dt className="text-xs text-gray-400 font-medium">{label}</dt>
-      <dd className="text-gray-800 mt-0.5">{value ?? "—"}</dd>
-    </div>
-  );
-}
-
-function RevenueCard({ label, value, color }: { label: string; value: string; color: "blue" | "green" | "red" }) {
-  const styles = {
-    blue: "bg-blue-50 border-blue-200 text-blue-700",
-    green: "bg-emerald-50 border-emerald-200 text-emerald-700",
-    red: "bg-red-50 border-red-200 text-red-700",
-  };
-  return (
-    <div className={`border rounded-lg p-3 text-center ${styles[color]}`}>
-      <div className="text-xs font-medium opacity-75">{label}</div>
-      <div className="font-bold text-sm mt-0.5">{value}</div>
-    </div>
-  );
-}
-
-function LongField({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
-  return (
-    <div className={accent ? "bg-accent/10 rounded-lg p-3" : ""}>
-      <p className={`text-xs font-semibold mb-1.5 ${accent ? "text-accent" : "text-gray-400"}`}>{label}</p>
-      <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{value}</p>
-    </div>
+      <DrawerMoney
+        value={dealValueOf(deal) ? `${deal.currency ?? "GHS"} ${Number(dealValueOf(deal)).toLocaleString()}` : "—"}
+        received={dealMoneyText(deal.revenueReceivedGhs ?? 0, deal)}
+        balance={dealStatus(deal) === "CANCELLED" ? "—" : dealMoneyText(deal.balanceGhs, deal)}
+      />
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
+        <DItem label="Value chain" value={deal.valueChain} />
+        <DItem label="BDO" value={deal.bdo?.name} />
+        <DItem label="Email" value={deal.email} />
+        <DItem label="Telephone" value={deal.telephone} />
+        <DItem label="Expected payment" value={deal.expectedPaymentDate || deal.dueDate ? new Date((deal.expectedPaymentDate ?? deal.dueDate) as string).toLocaleDateString() : null} />
+      </dl>
+      <DealPayments source="TRADELINE" dealId={deal.id} company="TRADELINE" dealName={deal.businessName} cancelled={deal.dealStage === "CLOSED_LOST"} endpoint={`/tradeline/${deal.id}`} onChanged={onChanged} />
+      {deal.nextAction && <LongField label="Next action required" value={deal.nextAction} accent />}
+      {deal.currentStatus && <LongField label="Current status / updates" value={deal.currentStatus} />}
+    </DealDrawer>
   );
 }

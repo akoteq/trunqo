@@ -2,35 +2,54 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { clsx } from "clsx";
+import { Briefcase, ChevronDown, ClipboardCheck, Download, MessageSquareWarning, Phone, Plus, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { api, fetcher } from "@/lib/api";
 import { toast } from "@/components/Toast";
 import { confirmAction } from "@/components/Confirm";
-import { DataTable, type Column } from "@/components/DataTable";
-import { ClientSelect, type ClientOption } from "@/components/ClientSelect";
 import { useComplianceCompanies, STATE_LABEL, STATE_STYLE } from "@/components/ClientModules";
 import { useAuth } from "@/components/AuthProvider";
 import { accessLevel } from "@/lib/auth";
-import { useCompanies, companyHref } from "@/lib/companies";
-import { X, ShieldCheck, Phone, Briefcase, History } from "lucide-react";
-import Link from "next/link";
+import { clearParams, onDeepLink } from "@/lib/mentions";
+import { RecordSheet } from "./components/RecordSheet";
+import { RenewSheet } from "./components/RenewSheet";
+import { VerifySheet, EvidenceSheet } from "./components/VerifySheet";
+import { AssessSheet } from "./components/AssessSheet";
+import { RecordDetail } from "./components/RecordDetail";
+import { OutreachSheet, OpportunitySheet } from "./components/ClientActionSheets";
+import { actionOverdue, ago, canVerify, d10, nextStep, showDate, type Rec, type ReqType } from "./components/lib";
 
 // Regulatory compliance (GRA, FDA, GSA, EPA, ORC...) for companies that have the module on.
-// Verified always starts as No; whoever can edit a record may verify it, and every change is logged.
+// One card per client, with its requirements inside, so a client with five requirements shows
+// once. Client-level actions (outreach, opportunity, add a requirement) sit on the card; each
+// requirement row only offers the one thing it needs next (assess, verify, renew). Clicking a
+// requirement opens its details; ?record=<id> (from the bell) opens one directly.
 
-type Rec = {
-  id: string; smeId: string; clientName: string; company: string; requirementTypeId: string; regulator: string; requirementName: string; subject: string;
-  applicability: string; notApplicableReason?: string; status: string; referenceNumber?: string; issueDate?: string | null; expiryDate?: string | null;
-  nextRenewalDate?: string | null; evidenceDocIds: string[]; verified: boolean; verifiedByName?: string | null; verifiedAt?: string | null;
-  responsibleBdoId?: string | null; responsibleName?: string | null; nextAction?: string; nextActionDate?: string | null;
-  opportunityDealId?: string | null; opportunityLeadId?: string | null; state: string; renewalDue: boolean; dueDate: string | null; daysToDue: number | null; lastOutreachAt?: string | null;
+const FILTERS: [string, string][] = [["", "All"], ["ATTENTION", "Needs action"], ["TO_VERIFY", "I can verify"], ["MINE", "Mine"], ["VERIFIED", "Verified"], ["AWAITING_VERIFICATION", "Awaiting verification"], ["NOT_REGISTERED", "Not registered"], ["UNASSESSED", "Not assessed"], ["RENEWAL", "Renewal due"], ["EXPIRED", "Expired"], ["NOT_APPLICABLE", "Not applicable"]];
+const PAGE = 40;
+
+// Lower is more urgent. Anything up to 4 needs someone to act.
+function urgency(r: Rec): number {
+  if (r.state === "EXPIRED" || r.state === "SUSPENDED") return 0;
+  if (r.renewalDue && r.state !== "NOT_APPLICABLE") return 1;
+  return ({ AWAITING_VERIFICATION: 2, NOT_REGISTERED: 3, IN_PROGRESS: 4, UNASSESSED: 5, VERIFIED: 6, NOT_APPLICABLE: 7 } as Record<string, number>)[r.state] ?? 5;
+}
+const needsAction = (r: Rec) => urgency(r) <= 4;
+type Me = { id: string; bdoId: string | null };
+const matchesState = (r: Rec, s: string, me: Me) => {
+  switch (s) {
+    case "": return true;
+    case "RENEWAL": return r.renewalDue;
+    case "ATTENTION": return needsAction(r);
+    case "TO_VERIFY": return canVerify(r, me.id);
+    case "MINE": return !!me.bdoId && r.responsibleBdoId === me.bdoId;
+    default: return r.state === s;
+  }
 };
-type ReqType = { id: string; code: string; regulator: string; name: string; perSubject: boolean; renewal: { kind: string; intervalMonths?: number | null } };
-type Bdo = { id: string; name: string; company: string };
 
-const FILTERS: [string, string][] = [["", "All"], ["VERIFIED", "Verified"], ["AWAITING_VERIFICATION", "Awaiting verification"], ["NOT_REGISTERED", "Not registered"], ["UNASSESSED", "Not assessed"], ["RENEWAL", "Renewal due"], ["EXPIRED", "Expired"], ["NOT_APPLICABLE", "Not applicable"]];
-const d10 = (s?: string | null) => (s ? s.slice(0, 10) : "");
-const showDate = (s?: string | null) => (s ? new Date(s).toLocaleDateString() : "—");
-const errText = (e: unknown, f: string) => (e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? f;
+type Group = { key: string; smeId: string; company: string; clientName: string; records: Rec[]; top: number };
+
+const csvCell = (v: unknown) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 
 export default function CompliancePage() {
   const companies = useComplianceCompanies();
@@ -39,327 +58,273 @@ export default function CompliancePage() {
   const [state, setState] = useState("");
   const [regulator, setRegulator] = useState("");
   const [company, setCompany] = useState("");
-  const [editing, setEditing] = useState<Rec | "new" | null>(null);
-  const [outreach, setOutreach] = useState<Rec | null>(null);
-  const [opportunity, setOpportunity] = useState<Rec | null>(null);
+  const [search, setSearch] = useState("");
+  const [shown, setShown] = useState(PAGE);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [editing, setEditing] = useState<Rec | "new" | { smeId: string; company: string } | null>(null);
+  const [outreach, setOutreach] = useState<Group | null>(null);
+  const [opportunity, setOpportunity] = useState<Group | null>(null);
+  const [renewing, setRenewing] = useState<Rec | null>(null);
+  const [verifying, setVerifying] = useState<Rec | null>(null);
+  const [attaching, setAttaching] = useState<Rec | null>(null);
+  const [assessing, setAssessing] = useState<Group | null>(null);
+  // An id, so the panel shows fresh data after any change.
+  const [viewingId, setViewingId] = useState<string | null>(null);
+  const owner = !!user && accessLevel(user.role) === "GROUP_OWNER";
 
-  useEffect(() => { const s = new URLSearchParams(window.location.search).get("state"); if (s) setState(s); }, []);
+  useEffect(() => onDeepLink((q) => {
+    const s = q.get("state"); if (s) setState(s);
+    const rec = q.get("record"); if (rec) { setViewingId(rec); clearParams("record"); }
+  }), []);
 
   const { data: rows = [], isLoading } = useQuery<Rec[]>({ queryKey: ["compliance", "all"], queryFn: () => fetcher("/compliance"), enabled: companies.length > 0 });
   const { data: types = [] } = useQuery<ReqType[]>({ queryKey: ["compliance-types"], queryFn: () => fetcher("/compliance/types") });
   const refresh = () => { qc.invalidateQueries({ queryKey: ["compliance"] }); };
 
-  const filtered = rows.filter((r) =>
-    (!state || (state === "RENEWAL" ? r.renewalDue : r.state === state)) && (!regulator || r.regulator === regulator) && (!company || r.company === company));
-  const count = (s: string) => rows.filter((r) => (s === "RENEWAL" ? r.renewalDue : !s || r.state === s)).length;
-  const regulators = [...new Set(types.map((t) => t.regulator))].sort();
+  const me: Me = useMemo(() => ({ id: user?.id ?? "", bdoId: user?.bdoId ?? null }), [user?.id, user?.bdoId]);
+  const q = search.trim().toLowerCase();
+  const filtered = useMemo(() => rows.filter((r) =>
+    matchesState(r, state, me) && (!regulator || r.regulator === regulator) && (!company || r.company === company)
+    && (!q || [r.clientName, r.requirementName, r.regulator, r.referenceNumber, r.subject].some((v) => (v ?? "").toLowerCase().includes(q)))), [rows, state, regulator, company, q, me]);
 
-  const verify = async (r: Rec, verified: boolean) => {
-    try {
-      await api.post(`/compliance/${r.id}/verify`, { verified });
-      toast.success(verified ? "Marked as verified" : "Verification removed", { description: `${r.requirementName} · ${r.clientName}` });
-      refresh();
-    } catch (e) { toast.failed("Couldn't change verification", e); }
+  const groups = useMemo(() => {
+    const by = new Map<string, Group>();
+    for (const r of filtered) {
+      const key = `${r.smeId}:${r.company}`;
+      const g = by.get(key) ?? { key, smeId: r.smeId, company: r.company, clientName: r.clientName, records: [], top: 9 };
+      g.records.push(r); g.top = Math.min(g.top, urgency(r));
+      by.set(key, g);
+    }
+    for (const g of by.values()) g.records.sort((a, b) => urgency(a) - urgency(b) || a.regulator.localeCompare(b.regulator) || a.requirementName.localeCompare(b.requirementName));
+    return [...by.values()].sort((a, b) => a.top - b.top || a.clientName.localeCompare(b.clientName));
+  }, [filtered]);
+
+  const count = (s: string) => rows.filter((r) => matchesState(r, s, me)).length;
+  const regulators = [...new Set(types.map((t) => t.regulator))].sort();
+  const narrowed = !!(state || regulator || company || q);
+  // Cards that need action start open; the rest are one line until opened. Filtering opens them all.
+  const isOpen = (g: Group) => open[g.key] ?? (narrowed || g.top <= 4);
+  const allOpen = groups.slice(0, shown).every(isOpen);
+  const setAll = (v: boolean) => setOpen(Object.fromEntries(groups.map((g) => [g.key, v])));
+
+  const unverify = (r: Rec) => confirmAction({ title: "Mark as not verified?", body: `${r.requirementName} for ${r.clientName} goes back to awaiting verification.`, confirmLabel: "Unverify", danger: false })
+    .then(async (ok) => {
+      if (!ok) return;
+      try {
+        await api.post(`/compliance/${r.id}/verify`, { verified: false });
+        toast.success("Verification removed", { description: `${r.requirementName} · ${r.clientName}` });
+        refresh();
+      } catch (e) { toast.failed("Couldn't change verification", e); }
+    });
+  const remove = (r: Rec) => confirmAction({ title: `Delete ${r.requirementName} for ${r.clientName}?`, body: "This can't be undone.", confirmLabel: "Delete" })
+    .then((ok) => { if (ok) api.delete(`/compliance/${r.id}`).then(() => { toast.success("Record deleted", { description: `${r.requirementName} · ${r.clientName}` }); setViewingId(null); refresh(); }, (e) => toast.failed("Couldn't delete the record", e)); });
+
+  const exportCsv = () => {
+    const head = ["Client", "Regulator", "Requirement", "Product or site", "State", "Reference", "Expires / renews", "Responsible", "Next action"];
+    const lines = filtered.map((r) => [r.clientName, r.regulator, r.requirementName, r.subject, STATE_LABEL[r.state], r.referenceNumber, d10(r.dueDate), r.responsibleName, r.nextAction].map(csvCell).join(","));
+    const url = URL.createObjectURL(new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" }));
+    const a = Object.assign(document.createElement("a"), { href: url, download: `compliance-${new Date().toISOString().slice(0, 10)}.csv` });
+    a.click(); URL.revokeObjectURL(url);
   };
 
   if (!user) return null;
   if (!companies.length) {
     return (
       <div className="p-6">
-        <h1 className="text-2xl font-bold text-gray-900">Compliance</h1>
-        <p className="mt-2 text-sm text-gray-500">Compliance tracking is switched off for your company. The Group Owner can switch it on under Add a Company.</p>
+        <h1 className="text-2xl font-bold text-foreground">Compliance</h1>
+        <p className="mt-2 text-sm text-muted">Compliance tracking is switched off for your company. The Group Owner can switch it on under Add a Company.</p>
       </div>
     );
   }
 
-  const columns: Column<Rec>[] = [
-    { key: "clientName", label: "Client", sortable: true, render: (r) => <button onClick={() => setEditing(r)} className="text-left font-semibold text-accent hover:underline">{r.clientName}</button>, exportValue: (r) => r.clientName },
-    { key: "requirementName", label: "Requirement", render: (r) => <span><span className="font-medium text-gray-700">{r.regulator}</span> · {r.requirementName}{r.subject ? <span className="text-gray-500"> ({r.subject})</span> : null}</span>, exportValue: (r) => `${r.regulator} ${r.requirementName} ${r.subject}` },
-    { key: "state", label: "State", sortable: true, render: (r) => <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATE_STYLE[r.state]}`}>{STATE_LABEL[r.state]}</span>, exportValue: (r) => STATE_LABEL[r.state] },
-    { key: "referenceNumber", label: "Reference", render: (r) => r.referenceNumber || "—" },
-    {
-      key: "daysToDue", label: "Expires / renews", sortable: true,
-      render: (r) => r.dueDate ? <span className={r.daysToDue != null && r.daysToDue < 0 ? "text-red-600 font-medium" : r.renewalDue ? "text-amber-700 font-medium" : "text-gray-600"}>{showDate(r.dueDate)}{r.daysToDue != null && r.daysToDue <= 90 ? ` (${r.daysToDue < 0 ? `${-r.daysToDue}d ago` : `${r.daysToDue}d`})` : ""}</span> : "—",
-      exportValue: (r) => d10(r.dueDate),
-    },
-    { key: "responsibleName", label: "Responsible", render: (r) => r.responsibleName ?? "—" },
-    { key: "nextAction", label: "Next action", render: (r) => r.nextAction ? `${r.nextAction}${r.nextActionDate ? ` · ${showDate(r.nextActionDate)}` : ""}` : "—" },
-    {
-      key: "actions", label: "",
-      render: (r) => (
-        <div className="flex items-center gap-2 text-xs whitespace-nowrap">
-          {r.state === "AWAITING_VERIFICATION" && <button onClick={() => verify(r, true)} className="font-semibold text-green-700 hover:underline">Verify</button>}
-          {r.state === "VERIFIED" && <button onClick={() => confirmAction({ title: "Mark as not verified?", body: `${r.requirementName} for ${r.clientName} goes back to awaiting verification.`, confirmLabel: "Unverify", danger: false }).then((ok) => { if (ok) verify(r, false); })} className="text-gray-500 hover:underline">Unverify</button>}
-          <button onClick={() => setOutreach(r)} className="text-accent hover:underline flex items-center gap-1"><Phone size={11} /> Log outreach</button>
-          {!r.opportunityDealId && !r.opportunityLeadId && companies.find((c) => c.key === r.company)?.modules?.complianceOpportunities && r.state !== "NOT_APPLICABLE" &&
-            <button onClick={() => setOpportunity(r)} className="text-accent hover:underline flex items-center gap-1"><Briefcase size={11} /> Opportunity</button>}
-          {r.opportunityLeadId && <span className="text-gray-400">In leads</span>}
-          {r.opportunityDealId && <span className="text-gray-400">In deals</span>}
-        </div>
-      ),
-    },
-  ];
+  const canOpportunity = (g: Group) => !!companies.find((c) => c.key === g.company)?.modules?.complianceOpportunities;
+  // Gaps that could become paid work: not already a lead or deal, and not fine as it is.
+  const openForOpportunity = (g: Group) => g.records.filter((r) =>
+    !r.opportunityDealId && !r.opportunityLeadId && r.state !== "NOT_APPLICABLE" && (r.state !== "VERIFIED" || r.renewalDue));
+  const selectCls = "text-sm bg-surface text-foreground border border-border rounded-lg px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-accent/30";
+  const manager = accessLevel(user.role) !== "STAFF";
+  const viewing = viewingId ? rows.find((r) => r.id === viewingId) ?? null : null;
 
   return (
     <div className="p-4 md:p-6 space-y-5">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><ShieldCheck size={22} /> Compliance</h1>
-        <p className="text-sm text-gray-500">Registrations with GRA, FDA, GSA, EPA, ORC and other regulators for {companies.map((c) => c.name).join(", ")} clients. A record is only &quot;Verified&quot; once someone has checked it.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="flex items-center gap-2 text-2xl font-bold text-foreground"><ShieldCheck size={22} /> Compliance</h1>
+          <p className="text-sm text-muted max-w-3xl">Registrations with GRA, FDA, GSA, EPA, ORC and other regulators for {companies.map((c) => c.name).join(", ")} clients. A record is only &quot;Verified&quot; once a colleague other than the person who entered it has checked the evidence.</p>
+        </div>
+        <button onClick={() => setEditing("new")} className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-accent text-accent-foreground rounded-lg hover:opacity-90"><Plus size={15} /> New record</button>
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {FILTERS.map(([k, l]) => (
-          <button key={k} onClick={() => setState(k)} className={`px-3 py-1.5 rounded-full text-xs font-medium border ${state === k ? "bg-accent text-accent-foreground border-accent" : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"}`}>
-            {l} <span className={state === k ? "text-accent-foreground/80" : "text-gray-400"}>{count(k)}</span>
+        {FILTERS.filter(([k]) => k !== "MINE" || !!user.bdoId).map(([k, l]) => (
+          <button key={k} onClick={() => { setState(k); setShown(PAGE); }}
+            className={clsx("px-3 py-1.5 rounded-full text-xs font-medium border transition-colors", state === k ? "bg-accent text-accent-foreground border-accent" : "bg-surface text-muted border-border hover:text-foreground")}>
+            {l} <span className={state === k ? "text-accent-foreground/80" : "text-muted/70"}>{count(k)}</span>
           </button>
         ))}
       </div>
 
-      <DataTable
-        columns={columns}
-        data={filtered}
-        isLoading={isLoading}
-        title={`${filtered.length} records`}
-        onAdd={() => setEditing("new")}
-        onEdit={(r) => setEditing(r)}
-        onDelete={accessLevel(user.role) !== "STAFF" ? (r) => confirmAction({ title: `Delete ${r.requirementName} for ${r.clientName}?`, body: "This can't be undone.", confirmLabel: "Delete" }).then((ok) => { if (ok) api.delete(`/compliance/${r.id}`).then(() => { toast.success("Record deleted", { description: `${r.requirementName} · ${r.clientName}` }); refresh(); }, (e) => toast.failed("Couldn't delete the record", e)); }) : undefined}
-        filterBar={
-          <div className="flex gap-2 flex-wrap">
-            <select value={regulator} onChange={(e) => setRegulator(e.target.value)} className="text-sm border border-gray-200 rounded-lg px-2 py-1.5">
-              <option value="">All regulators</option>{regulators.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-            {companies.length > 1 && (
-              <select value={company} onChange={(e) => setCompany(e.target.value)} className="text-sm border border-gray-200 rounded-lg px-2 py-1.5">
-                <option value="">All companies</option>{companies.map((c) => <option key={c.key} value={c.key}>{c.name}</option>)}
-              </select>
-            )}
-          </div>
-        }
-      />
-
-      {editing && <RecordModal record={editing === "new" ? null : editing} types={types} companies={companies.map((c) => ({ key: c.key, name: c.name }))} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} />}
-      {outreach && <OutreachModal record={outreach} onClose={() => setOutreach(null)} onSaved={() => { setOutreach(null); refresh(); }} />}
-      {opportunity && <OpportunityModal record={opportunity} onClose={() => setOpportunity(null)} onSaved={() => { setOpportunity(null); refresh(); }} />}
-    </div>
-  );
-}
-
-function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: React.ReactNode; footer: React.ReactNode; wide?: boolean }) {
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className={`bg-white rounded-xl shadow-xl w-full ${wide ? "max-w-2xl" : "max-w-md"} max-h-[92vh] flex flex-col`}>
-        <div className="px-5 py-4 border-b flex items-center justify-between shrink-0">
-          <h2 className="font-semibold">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
-        </div>
-        <div className="p-5 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain">{children}</div>
-        <div className="px-5 py-3 border-t flex justify-end gap-2 shrink-0">{footer}</div>
-      </div>
-    </div>
-  );
-}
-
-const inputCls = "w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30";
-function L({ label, children, span }: { label: string; children: React.ReactNode; span?: boolean }) {
-  return <div className={span ? "sm:col-span-2" : ""}><label className="text-xs font-medium text-gray-600 block mb-1">{label}</label>{children}</div>;
-}
-
-function RecordModal({ record, types, companies, onClose, onSaved }: { record: Rec | null; types: ReqType[]; companies: { key: string; name: string }[]; onClose: () => void; onSaved: () => void }) {
-  const { user } = useAuth();
-  const owner = !!user && accessLevel(user.role) === "GROUP_OWNER";
-  const { data: clients = [] } = useQuery<{ data: ClientOption[] }, Error, ClientOption[]>({ queryKey: ["sme-options"], queryFn: () => fetcher("/sme"), select: (r) => r.data, enabled: !record });
-  const [form, setForm] = useState({
-    company: record?.company ?? (owner ? companies[0]?.key ?? "" : user?.bdoCompany ?? ""),
-    smeId: record?.smeId ?? "", requirementTypeId: record?.requirementTypeId ?? "", subject: record?.subject ?? "",
-    applicability: record?.applicability ?? "APPLICABLE", notApplicableReason: record?.notApplicableReason ?? "",
-    status: record?.status ?? "NOT_REGISTERED", referenceNumber: record?.referenceNumber ?? "",
-    issueDate: d10(record?.issueDate), expiryDate: d10(record?.expiryDate), responsibleBdoId: record?.responsibleBdoId ?? "",
-    nextAction: record?.nextAction ?? "", nextActionDate: d10(record?.nextActionDate), evidenceDocIds: record?.evidenceDocIds ?? [],
-  });
-  const set = (k: string, v: unknown) => setForm((f) => ({ ...f, [k]: v }));
-  const { data: bdos = [] } = useQuery<Bdo[]>({ queryKey: ["bdos", form.company], queryFn: () => fetcher(`/bdo${owner && form.company ? `?company=${form.company}` : ""}`) });
-  const { data: docs = [] } = useQuery<{ id: string; fileName: string; fileUrl: string }[]>({ queryKey: ["client-documents", form.smeId], queryFn: () => fetcher(`/client-documents?smeId=${form.smeId}`), enabled: !!form.smeId });
-  const { data: suggestions = [] } = useQuery<{ id: string; regulator: string; name: string; reason: string }[]>({
-    queryKey: ["compliance-suggest", form.smeId, form.company], queryFn: () => fetcher(`/compliance/suggest?smeId=${form.smeId}${owner ? `&company=${form.company}` : ""}`), enabled: !record && !!form.smeId && !!form.company,
-  });
-  const { data: audit = [] } = useQuery<{ id: string; action: string; actorName: string | null; createdAt: string; note?: string; changes: { field: string; from: string; to: string }[] }[]>({
-    queryKey: ["compliance-audit", record?.id], queryFn: () => fetcher(`/compliance/${record!.id}/audit`), enabled: !!record,
-  });
-  const type = types.find((t) => t.id === form.requirementTypeId);
-  const byRegulator = useMemo(() => [...new Set(types.map((t) => t.regulator))].sort().map((r) => [r, types.filter((t) => t.regulator === r)] as const), [types]);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const qc = useQueryClient();
-
-  const upload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !form.smeId) return;
-    setUploading(true);
-    const fd = new FormData();
-    fd.append("file", file); fd.append("smeId", form.smeId); fd.append("category", "COMPLIANCE_EVIDENCE");
-    if (user?.email) fd.append("uploadedBy", user.email);
-    try {
-      const { data } = await api.post<{ id: string }>("/client-documents", fd, { headers: { "Content-Type": "multipart/form-data" } });
-      set("evidenceDocIds", [...form.evidenceDocIds, data.id]);
-      qc.invalidateQueries({ queryKey: ["client-documents", form.smeId] });
-    } catch (err) { setError(errText(err, "Upload failed.")); }
-    finally { setUploading(false); e.target.value = ""; }
-  };
-
-  const save = async () => {
-    setSaving(true); setError("");
-    const body: Record<string, unknown> = {
-      ...form, issueDate: form.issueDate || null, expiryDate: form.expiryDate || null, nextActionDate: form.nextActionDate || null,
-      responsibleBdoId: form.responsibleBdoId || null, notApplicableReason: form.notApplicableReason || undefined,
-    };
-    try {
-      if (record) { delete body.company; delete body.smeId; delete body.requirementTypeId; await api.put(`/compliance/${record.id}`, body); }
-      else await api.post("/compliance", body);
-      toast.success(record ? "Record updated" : "Record added");
-      onSaved();
-    } catch (e) { setError(errText(e, "Failed to save.")); }
-    finally { setSaving(false); }
-  };
-
-  return (
-    <Modal wide title={record ? `${record.regulator} ${record.requirementName} — ${record.clientName}` : "New compliance record"} onClose={onClose}
-      footer={<>
-        <button onClick={onClose} className="px-4 py-2 text-sm border rounded-lg">Cancel</button>
-        <button onClick={save} disabled={saving} className="px-4 py-2 text-sm font-medium bg-accent text-accent-foreground rounded-lg disabled:opacity-50">{saving ? "Saving…" : "Save"}</button>
-      </>}>
-      {error && <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg px-3 py-2">{error}</div>}
-      {record && (
-        <div className={`rounded-lg px-3 py-2 text-xs ${STATE_STYLE[record.state]}`}>
-          {STATE_LABEL[record.state]}{record.verified && record.verifiedByName ? ` by ${record.verifiedByName} on ${showDate(record.verifiedAt)}` : ""}. Changing the reference, dates or status of a verified record sends it back to &quot;awaiting verification&quot;.
-        </div>
-      )}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {!record && owner && companies.length > 1 && (
-          <L label="Tracked by" span><select value={form.company} onChange={(e) => set("company", e.target.value)} className={inputCls}>{companies.map((c) => <option key={c.key} value={c.key}>{c.name}</option>)}</select></L>
-        )}
-        {!record && <div className="sm:col-span-2"><ClientSelect label="Client *" value={form.smeId} options={clients} onChange={(id) => set("smeId", id)} /></div>}
-        {!record && (
-          <L label="Requirement *" span>
-            <select value={form.requirementTypeId} onChange={(e) => set("requirementTypeId", e.target.value)} className={inputCls}>
-              <option value="">— Choose —</option>
-              {byRegulator.map(([reg, ts]) => <optgroup key={reg} label={reg}>{ts.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</optgroup>)}
-            </select>
-            {suggestions.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                <span className="text-[11px] text-gray-400">Suggested for this client:</span>
-                {suggestions.map((s) => <button key={s.id} type="button" title={s.reason} onClick={() => set("requirementTypeId", s.id)} className="text-[11px] px-1.5 py-0.5 rounded bg-accent/10 text-accent hover:bg-accent/15">{s.regulator} {s.name}</button>)}
-              </div>
-            )}
-          </L>
-        )}
-        {(type?.perSubject || form.subject) && <L label={type?.perSubject ? "Product or site *" : "Product or site"} span><input value={form.subject} onChange={(e) => set("subject", e.target.value)} className={inputCls} placeholder="e.g. Shea butter 250g jar" /></L>}
-        <L label="Does it apply?">
-          <select value={form.applicability} onChange={(e) => set("applicability", e.target.value)} className={inputCls}>
-            <option value="APPLICABLE">Applies</option><option value="NOT_APPLICABLE">Does not apply</option><option value="UNASSESSED">Not assessed yet</option>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="relative flex-1 min-w-48 max-w-sm">
+          <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+          <input value={search} onChange={(e) => { setSearch(e.target.value); setShown(PAGE); }} placeholder="Search client, requirement or reference" className={clsx(selectCls, "w-full pl-8")} aria-label="Search" />
+        </label>
+        <select value={regulator} onChange={(e) => setRegulator(e.target.value)} className={selectCls} aria-label="Regulator">
+          <option value="">All regulators</option>{regulators.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+        {companies.length > 1 && (
+          <select value={company} onChange={(e) => setCompany(e.target.value)} className={selectCls} aria-label="Company">
+            <option value="">All companies</option>{companies.map((c) => <option key={c.key} value={c.key}>{c.name}</option>)}
           </select>
-        </L>
-        {form.applicability === "NOT_APPLICABLE"
-          ? <L label="Why not *"><input value={form.notApplicableReason} onChange={(e) => set("notApplicableReason", e.target.value)} className={inputCls} /></L>
-          : <L label="Status">
-              <select value={form.status} onChange={(e) => set("status", e.target.value)} className={inputCls}>
-                <option value="NOT_REGISTERED">Not registered</option><option value="IN_PROGRESS">In progress</option><option value="REGISTERED">Registered</option><option value="EXPIRED">Expired</option><option value="SUSPENDED">Suspended</option>
-              </select>
-            </L>}
-        <L label="Reference number"><input value={form.referenceNumber} onChange={(e) => set("referenceNumber", e.target.value)} className={inputCls} /></L>
-        <L label="Responsible">
-          <select value={form.responsibleBdoId} onChange={(e) => set("responsibleBdoId", e.target.value)} className={inputCls}>
-            <option value="">— Nobody —</option>{bdos.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
-        </L>
-        <L label="Issue date"><input type="date" value={form.issueDate} onChange={(e) => set("issueDate", e.target.value)} className={inputCls} /></L>
-        <L label={type?.renewal?.kind === "NONE" ? "Expiry date (if any)" : "Expiry date"}><input type="date" value={form.expiryDate} onChange={(e) => set("expiryDate", e.target.value)} className={inputCls} /></L>
-        <L label="Next action"><input value={form.nextAction} onChange={(e) => set("nextAction", e.target.value)} className={inputCls} /></L>
-        <L label="Next action by"><input type="date" value={form.nextActionDate} onChange={(e) => set("nextActionDate", e.target.value)} className={inputCls} /></L>
+        )}
+        <div className="ml-auto flex items-center gap-3 text-sm">
+          <span className="text-muted">{groups.length} client{groups.length === 1 ? "" : "s"} · {filtered.length} record{filtered.length === 1 ? "" : "s"}</span>
+          {groups.length > 0 && <button onClick={() => setAll(!allOpen)} className="text-accent hover:underline">{allOpen ? "Collapse all" : "Expand all"}</button>}
+          <button onClick={exportCsv} disabled={!filtered.length} className="inline-flex items-center gap-1 text-muted hover:text-foreground disabled:opacity-50"><Download size={14} /> Export</button>
+        </div>
       </div>
-      {type && <p className="text-[11px] text-gray-400">Renewal: {type.renewal.kind === "NONE" ? "does not renew" : type.renewal.kind === "INTERVAL" ? `every ${type.renewal.intervalMonths} months from the issue date` : "on the expiry date shown on the certificate"}.</p>}
-      {form.smeId && (
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <p className="text-xs font-medium text-gray-600">Evidence</p>
-            <label className="text-xs font-medium text-accent cursor-pointer">{uploading ? "Uploading…" : "+ Upload"}<input type="file" className="hidden" onChange={upload} disabled={uploading} /></label>
-          </div>
-          {docs.length === 0 ? <p className="text-xs text-gray-400">No documents for this client yet.</p> : (
-            <div className="space-y-1 max-h-32 overflow-y-auto">
-              {docs.map((d) => (
-                <label key={d.id} className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={form.evidenceDocIds.includes(d.id)} onChange={(e) => set("evidenceDocIds", e.target.checked ? [...form.evidenceDocIds, d.id] : form.evidenceDocIds.filter((x) => x !== d.id))} />
-                  <a href={d.fileUrl} target="_blank" rel="noopener noreferrer" className="truncate text-gray-700 hover:underline">{d.fileName}</a>
-                </label>
-              ))}
-            </div>
+
+      {isLoading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="h-20 rounded-xl bg-foreground/5 animate-pulse" />)}</div>
+      ) : groups.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted">
+          {rows.length ? "No records match these filters." : "No compliance records yet. Add one, or start working with a client to get the basic requirements listed."}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {groups.slice(0, shown).map((g) => {
+            const expanded = isOpen(g);
+            const gaps = canOpportunity(g) ? openForOpportunity(g) : [];
+            const people = [...new Set(g.records.map((r) => r.responsibleName).filter(Boolean))] as string[];
+            const tally = Object.entries(g.records.reduce<Record<string, number>>((m, r) => ({ ...m, [r.state]: (m[r.state] ?? 0) + 1 }), {}))
+              .sort((a, b) => urgency({ state: a[0] } as Rec) - urgency({ state: b[0] } as Rec));
+            const renewals = g.records.filter((r) => r.renewalDue && r.state !== "EXPIRED").length;
+            const lastContact = g.records.map((r) => r.lastOutreachAt).filter(Boolean).sort().pop() ?? null;
+            const unassessed = g.records.filter((r) => r.state === "UNASSESSED").length;
+            return (
+              <section key={g.key} className="rounded-xl border border-border bg-surface shadow-card overflow-hidden">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+                  <button onClick={() => setOpen({ ...open, [g.key]: !expanded })} aria-expanded={expanded} className="flex min-w-0 flex-1 items-start gap-2.5 text-left">
+                    <ChevronDown size={16} className={clsx("mt-1 shrink-0 text-muted transition-transform", !expanded && "-rotate-90")} />
+                    <span className="min-w-0">
+                      <span className="block font-semibold text-foreground truncate">
+                        {g.clientName}
+                        {companies.length > 1 && <span className="ml-2 text-xs font-normal text-muted">{companies.find((c) => c.key === g.company)?.name}</span>}
+                      </span>
+                      <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                        {tally.map(([s, n]) => <span key={s} className={clsx("px-2 py-0.5 rounded-full text-[11px] font-medium", STATE_STYLE[s])}>{n} {STATE_LABEL[s].toLowerCase()}</span>)}
+                        {renewals > 0 && <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-800">{renewals} renewal due</span>}
+                        {people.length > 0 && <span className="text-xs text-muted">· {people.join(", ")}</span>}
+                        <span className="text-xs text-muted">· last contact {ago(lastContact)}</span>
+                      </span>
+                    </span>
+                  </button>
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                    <button onClick={() => setAssessing(g)} title="Say which registrations apply to this client"
+                      className={clsx("inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5", unassessed ? "border-accent text-accent hover:bg-accent/10" : "border-border text-foreground hover:bg-foreground/5")}>
+                      <ClipboardCheck size={12} /> Assess{unassessed ? ` (${unassessed})` : ""}
+                    </button>
+                    <button onClick={() => setOutreach(g)} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-foreground hover:bg-foreground/5"><Phone size={12} /> Log outreach</button>
+                    {gaps.length > 0 && <button onClick={() => setOpportunity(g)} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-foreground hover:bg-foreground/5"><Briefcase size={12} /> Opportunity</button>}
+                    <button onClick={() => setEditing({ smeId: g.smeId, company: g.company })} className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-accent hover:bg-accent/10" title="Add a requirement for this client"><Plus size={12} /> Requirement</button>
+                  </div>
+                </div>
+
+                {expanded && (
+                  <ul className="border-t border-border divide-y divide-border">
+                    {g.records.map((r) => (
+                      <li key={r.id} className="grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(0,1fr)_170px_150px_minmax(120px,auto)] items-center gap-x-4 gap-y-1.5 px-4 py-2.5 pl-10 hover:bg-foreground/[0.03]">
+                        <button onClick={() => setViewingId(r.id)} className="min-w-0 text-left">
+                          <span className="block text-sm text-foreground truncate">
+                            <span className="mr-1.5 inline-block rounded bg-foreground/5 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-muted">{r.regulator}</span>
+                            {r.requirementName}{r.subject && <span className="text-muted"> · {r.subject}</span>}
+                          </span>
+                          {r.sentBack && (
+                            <span className="mt-0.5 flex items-center gap-1 text-xs text-amber-700 truncate"><MessageSquareWarning size={11} className="shrink-0" /> Sent back: {r.sentBack.note}</span>
+                          )}
+                          {(r.referenceNumber || r.nextAction || r.opportunityLeadId || r.opportunityDealId) && (
+                            <span className="mt-0.5 block text-xs text-muted truncate">
+                              {[r.referenceNumber && `Ref ${r.referenceNumber}`, r.opportunityLeadId && "In leads", r.opportunityDealId && "In deals"].filter(Boolean).join(" · ")}
+                              {r.nextAction && (
+                                <span className={clsx(actionOverdue(r) && "text-red-600 font-medium")}>
+                                  {r.referenceNumber || r.opportunityLeadId || r.opportunityDealId ? " · " : ""}Next: {r.nextAction}{r.nextActionDate ? ` by ${showDate(r.nextActionDate)}` : ""}{actionOverdue(r) ? " (overdue)" : ""}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </button>
+                        <span className="justify-self-end sm:justify-self-start"><span className={clsx("inline-block px-2 py-0.5 rounded-full text-xs font-medium", STATE_STYLE[r.state])}>{STATE_LABEL[r.state]}</span></span>
+                        <span className={clsx("text-xs", r.daysToDue != null && r.daysToDue < 0 ? "text-red-600 font-medium" : r.renewalDue ? "text-amber-700 font-medium" : "text-muted")}>
+                          {r.dueDate ? <>{showDate(r.dueDate)}{r.daysToDue != null && r.daysToDue <= 90 ? ` · ${r.daysToDue < 0 ? `${-r.daysToDue}d ago` : `in ${r.daysToDue}d`}` : ""}</> : <span className="hidden sm:inline">No expiry</span>}
+                        </span>
+                        <span className="flex items-center justify-end gap-3 text-xs whitespace-nowrap">
+                          <RowAction r={r} userId={user.id} owner={owner} onEdit={() => setEditing(r)} onVerify={() => setVerifying(r)} onEvidence={() => setAttaching(r)} onRenew={() => setRenewing(r)}
+                            onUnverify={() => unverify(r)} />
+                          {manager && <button onClick={() => remove(r)} className="text-muted hover:text-red-600" aria-label={`Delete ${r.requirementName}`}>Delete</button>}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            );
+          })}
+          {groups.length > shown && (
+            <button onClick={() => setShown(shown + PAGE)} className="w-full rounded-xl border border-border py-2.5 text-sm text-muted hover:text-foreground hover:bg-foreground/5">
+              Show more clients ({groups.length - shown} left)
+            </button>
           )}
         </div>
       )}
-      {record && audit.length > 0 && (
-        <details className="text-xs text-gray-500">
-          <summary className="cursor-pointer flex items-center gap-1"><History size={12} /> History ({audit.length})</summary>
-          <ul className="mt-2 space-y-1">
-            {audit.map((a) => (
-              <li key={a.id}>{new Date(a.createdAt).toLocaleString()} · {a.actorName ?? "Someone"} · {a.action}{a.changes?.length ? `: ${a.changes.map((c) => `${c.field} ${c.from || "—"} → ${c.to || "—"}`).join("; ")}` : ""}{a.note ? ` — ${a.note}` : ""}</li>
-            ))}
-          </ul>
-        </details>
+
+      {viewing && (
+        <RecordDetail
+          record={viewing} userId={user.id} owner={owner} onClose={() => setViewingId(null)}
+          companyName={companies.length > 1 ? companies.find((c) => c.key === viewing.company)?.name : undefined}
+          actions={{
+            onEdit: () => setEditing(viewing), onVerify: () => setVerifying(viewing), onEvidence: () => setAttaching(viewing),
+            onRenew: () => setRenewing(viewing), onUnverify: () => unverify(viewing),
+            onOutreach: () => setOutreach({ key: viewing.id, smeId: viewing.smeId, company: viewing.company, clientName: viewing.clientName, records: [viewing], top: 0 }),
+            onDelete: manager ? () => remove(viewing) : undefined,
+          }}
+        />
       )}
-    </Modal>
+      {editing && (
+        <RecordSheet
+          record={editing !== "new" && "id" in editing ? editing : null}
+          preset={editing !== "new" && !("id" in editing) ? editing : undefined}
+          types={types} companies={companies.map((c) => ({ key: c.key, name: c.name }))}
+          onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }}
+        />
+      )}
+      {outreach && <OutreachSheet clientName={outreach.clientName} records={outreach.records} initialId={outreach.records[0].id} onClose={() => setOutreach(null)} onSaved={() => { setOutreach(null); refresh(); }} />}
+      {opportunity && (() => {
+        const gaps = openForOpportunity(opportunity);
+        return <OpportunitySheet clientName={opportunity.clientName} company={opportunity.company} records={gaps} initialId={gaps[0]?.id ?? ""} onClose={() => setOpportunity(null)} onSaved={() => { setOpportunity(null); refresh(); }} />;
+      })()}
+      {renewing && <RenewSheet record={renewing} onClose={() => setRenewing(null)} onSaved={() => { setRenewing(null); refresh(); }} />}
+      {verifying && <VerifySheet record={verifying} ownEntry={verifying.enteredBy === user.id} onClose={() => setVerifying(null)} onSaved={() => { setVerifying(null); refresh(); }} />}
+      {attaching && <EvidenceSheet record={attaching} onClose={() => setAttaching(null)} onSaved={() => { setAttaching(null); refresh(); }} />}
+      {assessing && <AssessSheet clientName={assessing.clientName} smeId={assessing.smeId} company={assessing.company} records={assessing.records} onClose={() => setAssessing(null)} onSaved={() => { setAssessing(null); refresh(); }} />}
+    </div>
   );
 }
 
-function OutreachModal({ record, onClose, onSaved }: { record: Rec; onClose: () => void; onSaved: () => void }) {
-  const [type, setType] = useState("CALL");
-  const [note, setNote] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const save = async () => {
-    setSaving(true); setError("");
-    try { await api.post(`/compliance/${record.id}/outreach`, { type, note }); toast.success("Outreach logged", { description: record.clientName }); onSaved(); } catch (e) { setError(errText(e, "Failed to save.")); } finally { setSaving(false); }
-  };
-  return (
-    <Modal title={`Log outreach — ${record.clientName}`} onClose={onClose} footer={<>
-      <button onClick={onClose} className="px-4 py-2 text-sm border rounded-lg">Cancel</button>
-      <button onClick={save} disabled={saving || !note.trim()} className="px-4 py-2 text-sm font-medium bg-accent text-accent-foreground rounded-lg disabled:opacity-50">{saving ? "Saving…" : "Save"}</button>
-    </>}>
-      {error && <div className="bg-red-50 text-red-700 text-xs rounded-lg px-3 py-2">{error}</div>}
-      <p className="text-xs text-gray-500">About {record.regulator} {record.requirementName}. It goes on the client&apos;s follow-up log.</p>
-      <select value={type} onChange={(e) => setType(e.target.value)} className={inputCls}>{["CALL", "VISIT", "MEETING", "EMAIL", "OTHER"].map((t) => <option key={t}>{t}</option>)}</select>
-      <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="What happened?" className={`${inputCls} resize-none`} />
-    </Modal>
-  );
-}
-
-function OpportunityModal({ record, onClose, onSaved }: { record: Rec; onClose: () => void; onSaved: () => void }) {
-  const { data: bdos = [] } = useQuery<Bdo[]>({ queryKey: ["bdos", record.company], queryFn: () => fetcher(`/bdo?company=${record.company}`) });
-  const renewal = ["VERIFIED", "AWAITING_VERIFICATION"].includes(record.state) && record.renewalDue;
-  const [form, setForm] = useState({ ownerBdoId: record.responsibleBdoId ?? "", potentialFeeGhs: "", nextAction: "", nextActionDate: "", serviceType: renewal ? "Renewal support" : "Registration assistance" });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [done, setDone] = useState<string | null>(null);
-  const save = async () => {
-    setSaving(true); setError("");
-    try {
-      await api.post(`/compliance/${record.id}/opportunity`, { ...form, potentialFeeGhs: form.potentialFeeGhs || null, nextActionDate: form.nextActionDate || null });
-      setDone(`/leads?q=${encodeURIComponent(record.clientName)}`);
-    } catch (e) { setError(errText(e, "Failed to create the opportunity.")); } finally { setSaving(false); }
-  };
-  return (
-    <Modal title={`New opportunity — ${record.clientName}`} onClose={done ? onSaved : onClose} footer={done
-      ? <><Link href={done} className="px-4 py-2 text-sm font-medium text-accent">Open in leads →</Link><button onClick={onSaved} className="px-4 py-2 text-sm border rounded-lg">Close</button></>
-      : <><button onClick={onClose} className="px-4 py-2 text-sm border rounded-lg">Cancel</button>
-        <button onClick={save} disabled={saving || !form.ownerBdoId} className="px-4 py-2 text-sm font-medium bg-accent text-accent-foreground rounded-lg disabled:opacity-50">{saving ? "Creating…" : "Create lead"}</button></>}>
-      {done ? <p className="text-sm text-green-700">This is now a lead, linked to the client. When it is won, convert it and add a deal.</p> : <>
-        {error && <div className="bg-red-50 text-red-700 text-xs rounded-lg px-3 py-2">{error}</div>}
-        <p className="text-xs text-gray-500">{record.regulator} {record.requirementName}{record.subject ? ` (${record.subject})` : ""} — {STATE_LABEL[record.state]}.</p>
-        <L label="Service"><input value={form.serviceType} onChange={(e) => setForm({ ...form, serviceType: e.target.value })} className={inputCls} /></L>
-        <L label="Owner *"><select value={form.ownerBdoId} onChange={(e) => setForm({ ...form, ownerBdoId: e.target.value })} className={inputCls}><option value="">— Choose —</option>{bdos.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></L>
-        <L label="Potential fee (GHS)"><input type="number" min={0} value={form.potentialFeeGhs} onChange={(e) => setForm({ ...form, potentialFeeGhs: e.target.value })} className={inputCls} /></L>
-        <L label="Next action"><input value={form.nextAction} onChange={(e) => setForm({ ...form, nextAction: e.target.value })} className={inputCls} /></L>
-        <L label="By"><input type="date" value={form.nextActionDate} onChange={(e) => setForm({ ...form, nextActionDate: e.target.value })} className={inputCls} /></L>
-      </>}
-    </Modal>
-  );
+// The one thing a requirement needs next. Nothing when it's in good shape.
+function RowAction({ r, userId, owner, onEdit, onVerify, onEvidence, onRenew, onUnverify }: {
+  r: Rec; userId: string; owner: boolean; onEdit: () => void; onVerify: () => void; onEvidence: () => void; onRenew: () => void; onUnverify: () => void;
+}) {
+  const link = "font-medium text-accent hover:underline";
+  switch (nextStep(r, userId, owner)) {
+    case "renew": return <button onClick={onRenew} className={clsx(link, "inline-flex items-center gap-1")}><RefreshCw size={11} /> Renew</button>;
+    case "assess": return <button onClick={onEdit} className={link}>Assess</button>;
+    case "fix": return <button onClick={onEdit} className="font-medium text-amber-700 hover:underline">Fix</button>;
+    case "sentBack": return <span className="text-muted" title="Waiting for whoever entered it to fix it">Sent back</span>;
+    case "evidence": return <button onClick={onEvidence} title="Attach the certificate before it can be verified" className="font-medium text-amber-700 hover:underline">Add evidence</button>;
+    case "verify": case "override": return <button onClick={onVerify} className="font-semibold text-green-700 hover:underline">Verify</button>;
+    case "colleague": return <span className="text-muted" title="You entered these details, so a colleague verifies them">Needs a colleague</span>;
+    case "unverify": return <button onClick={onUnverify} className="text-muted hover:text-foreground">Unverify</button>;
+    case "update": return <button onClick={onEdit} className={link}>Update</button>;
+    default: return null;
+  }
 }
